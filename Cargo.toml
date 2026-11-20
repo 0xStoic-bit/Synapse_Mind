@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/s-types",
+    "crates/s-sensor",
+    "crates/s-guard",
+    "crates/s-core",
+    "tests/redteam",
+]
+# src-tauri Faz 4'te overlay-ui-dev tarafından eklenecek.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-MIT"
+publish = false
+
+[workspace.dependencies]
+s-types = { path = "crates/s-types" }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

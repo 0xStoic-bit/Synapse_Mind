@@ -1,0 +1,7 @@
+# Synapse Mind kök Cargo yapılandırması (tüm alt workspace'ler devralır).
+# SQLCipher (rusqlite bundled-sqlcipher-vendored-openssl) OpenSSL'i kaynaktan
+# derler; OpenSSL Configure betiği yerel Windows Perl ister (Git/MSYS perl yetmez).
+# Kurulum: winget install StrawberryPerl.StrawberryPerl
+# NASM yoksa openssl-src otomatik olarak no-asm ile derler.
+[env]
+OPENSSL_SRC_PERL = "C:/Strawberry/perl/bin/perl.exe"

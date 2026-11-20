@@ -1,0 +1,13 @@
+[package]
+name = "s-redteam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s-types.workspace = true
+s-guard = { path = "../../crates/s-guard" }
+
+[dev-dependencies]
+tokio.workspace = true

@@ -1,0 +1,31 @@
+[package]
+name = "s-sensor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s-types.workspace = true
+tokio = { workspace = true, features = ["time", "signal"] }
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Performance",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

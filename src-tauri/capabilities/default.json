@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal overlay permissions (no shell, no fs, overlay-only commands)",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-search",
+    "allow-hide-overlay",
+    "allow-is-demo-mode",
+    "allow-open-memory-panel"
+  ]
+}

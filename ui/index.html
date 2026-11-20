@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synapse Mind</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main class="overlay" aria-label="Synapse Mind Arama">
+      <header class="search-bar">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+          <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <input
+          id="search-input"
+          type="text"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Hafızada ara... (ör. sqlite-vec, build.rs, terminal)"
+          aria-label="Arama sorgusu"
+        />
+        <span id="demo-badge" class="badge badge-demo hidden">DEMO</span>
+        <kbd class="kbd-hint" title="Pencereyi gizle">ESC</kbd>
+      </header>
+
+      <section id="results-container" class="results" role="listbox" aria-label="Arama sonuçları">
+        <div id="empty-state" class="empty-state">
+          Aramak için yazmaya başlayın · <kbd>Alt</kbd>+<kbd>Space</kbd> ile aç/kapat
+        </div>
+      </section>
+
+      <footer class="status-bar">
+        <span id="status-text">Hazır</span>
+        <div class="status-actions">
+          <button id="open-panel-btn" type="button" class="panel-link-btn" title="Hafıza Panelini aç (Ctrl+M)">
+            Hafıza Paneli
+          </button>
+          <span class="shortcuts-legend">
+            <kbd>↑</kbd><kbd>↓</kbd> gezin · <kbd>Esc</kbd> gizle
+          </span>
+        </div>
+      </footer>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

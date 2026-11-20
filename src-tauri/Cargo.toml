@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["."]
+
+[package]
+name = "synapse-mind"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-MIT"
+publish = false
+
+[features]
+# custom-protocol: arayüzü (ui/dist) exe'nin içine gömer. Bu olmadan `cargo build --release`
+# ile alınan ikili devUrl'e (localhost:1420) bağlanmaya çalışır. `cargo tauri build` bunu
+# kendisi açar; düz cargo derlemesi de doğru çalışsın diye varsayılan yapıldı (20.11.2026).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+fastembed = ["s-core/fastembed"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+s-core = { path = "../crates/s-core" }
+s-guard = { path = "../crates/s-guard" }
+s-sensor = { path = "../crates/s-sensor" }
+s-types = { path = "../crates/s-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

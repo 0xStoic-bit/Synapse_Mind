@@ -1,0 +1,82 @@
+# Gate 2 (RAM dump) altyapisi. Sahibi: redteam-auditor.
+#
+# Bu crate KOK workspace'in uyesi DEGILDIR: kendi `[workspace]` tablosu ve kendi Cargo.lock'u vardir
+# (src-tauri / benchmarks ile ayni desen). s-types / s-guard / s-redteam'e path bagimliligiyla baglanir.
+# Calistirma: `cd tests/security && cargo test` (veya `--manifest-path tests/security/Cargo.toml`).
+[workspace]
+
+[package]
+name = "s-gate2"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-MIT"
+publish = false
+
+[features]
+# `encrypted` modu: s-core `MemoryStore::open_encrypted` (graph-vector-core, Sprint 3 Asama B) mevcutsa
+# `cargo build --features encrypted`. API yoksa hedef bu modlari "SKIPPED" olarak bildirir.
+encrypted = ["core"]
+# Arena A (tek kullanımlık UIA işçi süreci): `s_sensor::run_uia_worker_if_requested`/`UiaProbe`/`UiaIsolation`
+# ana ağaçta göründüğünde AÇILIR (varsayılana alınacak). Kapalıyken hedef eski süreç-içi UIA ile derlenir.
+uia-worker = []
+# `core` modu: s-core (SQLite + sqlite-vec). Ayri ozellik: s-core'un SQLCipher/openssl derlemesi bu makinede
+# Windows-yerel perl gerektirebilir; kapaliyken hedef `core`/`encrypted*` modlarini "SKIPPED" bildirir.
+core = ["dep:s-core"]
+
+[dependencies]
+s-types = { path = "../../crates/s-types" }
+s-guard = { path = "../../crates/s-guard" }
+s-sensor = { path = "../../crates/s-sensor" }
+s-core = { path = "../../crates/s-core", optional = true }
+# Yalnizca denetci ikili/testi kullanir (fixture.rs `#[path]` ile eklenir); hedef ikili ve lib bunu
+# KULLANMAZ, boylece hedef surecin imajinda sentetik sir literalleri bulunmaz.
+s-redteam = { path = "../redteam" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+zeroize = "1"
+aho-corasick = "1"
+sha2 = "0.10"
+getrandom = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_System_Variant",
+] }
+
+[[bin]]
+name = "gate2-target"
+path = "src/bin/gate2_target.rs"
+
+[[bin]]
+name = "gate2-audit"
+path = "src/bin/gate2_audit.rs"
+
+[[bin]]
+name = "gate2-app"
+path = "src/bin/gate2_app.rs"
+
+[[bin]]
+name = "gate2-attrib"
+path = "src/bin/gate2_attrib.rs"
+
+[[bin]]
+name = "gate2-uia-latency"
+path = "src/bin/gate2_uia_latency.rs"
+required-features = ["uia-worker"]
+
+[[bin]]
+name = "gate2-workers"
+path = "src/bin/gate2_workers.rs"

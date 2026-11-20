@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synapse Mind · Hafıza Paneli</title>
+    <link rel="stylesheet" href="/src/panel.css" />
+  </head>
+  <body>
+    <div id="panel-root" class="app-frame">
+      <aside class="nav-rail" aria-label="Bölüm gezintisi">
+        <div class="rail-brand">
+          <svg class="brand-mark" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+            <rect x="2" y="2" width="24" height="24" rx="6" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+            <circle cx="14" cy="14" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <path d="M14 5.5v3M14 19.5v3M5.5 14h3M19.5 14h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+          </svg>
+          <div class="rail-title-group">
+            <span class="rail-brand-name">Synapse Mind</span>
+            <span class="rail-brand-sub">Yerel Hafıza</span>
+          </div>
+        </div>
+
+        <nav class="rail-nav" role="tablist" aria-label="Hafıza Paneli görünümleri">
+          <button type="button" class="nav-item active" role="tab" aria-selected="true" data-view="overview">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <rect x="3" y="3" width="8" height="8" rx="1.5"></rect>
+              <rect x="13" y="3" width="8" height="5" rx="1.5"></rect>
+              <rect x="13" y="10" width="8" height="11" rx="1.5"></rect>
+              <rect x="3" y="13" width="8" height="8" rx="1.5"></rect>
+            </svg>
+            <span>Genel Bakış</span>
+          </button>
+
+          <button type="button" class="nav-item" role="tab" aria-selected="false" data-view="activity">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" stroke-linecap="round"></path>
+            </svg>
+            <span>Zaman ve Uygulamalar</span>
+          </button>
+
+          <button type="button" class="nav-item" role="tab" aria-selected="false" data-view="privacy">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M12 3l7 3v6c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6l7-3z" stroke-linejoin="round"></path>
+              <path d="M9.5 12.2l1.8 1.8 3.4-3.6" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+            <span>Gizlilik ve Kalkan</span>
+          </button>
+
+          <button type="button" class="nav-item" role="tab" aria-selected="false" data-view="controls">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0" stroke-linecap="round"></path>
+              <circle cx="16" cy="7" r="2"></circle>
+              <circle cx="10" cy="12" r="2"></circle>
+              <circle cx="18" cy="17" r="2"></circle>
+            </svg>
+            <span>Kontrol ve Sistem</span>
+          </button>
+        </nav>
+
+        <div class="rail-footer">
+          <div class="trust-seal">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="4" y="11" width="16" height="10" rx="2"></rect>
+              <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+            </svg>
+            <span>Şifreli · DPAPI + SQLCipher</span>
+          </div>
+
+          <p class="rail-shortcut-hint">
+            Arama için <kbd>Alt</kbd> + <kbd>Space</kbd>
+          </p>
+        </div>
+      </aside>
+
+      <main class="workspace" id="workspace" aria-busy="true">
+        <header class="top-bar">
+          <div class="title-block">
+            <h1>Hafıza</h1>
+            <p class="subtitle">
+              <span id="today-date">Bugün</span> · yalnızca odak, pano ve metin değişimleri
+            </p>
+          </div>
+
+          <div class="top-actions">
+            <span id="state-pill" class="status-pill" data-state="active">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="state-label">Yükleniyor…</span>
+            </span>
+
+            <span id="demo-pill" class="demo-tag hidden">Örnek veri</span>
+
+            <button id="theme-toggle-btn" type="button" class="tool-btn" aria-label="Tema görünümünü değiştir">
+              Koyu görünüm
+            </button>
+
+            <button id="refresh-btn" type="button" class="tool-btn" aria-label="Panel verilerini yenile">
+              Yenile
+            </button>
+          </div>
+        </header>
+
+        <div id="error-banner" class="alert-banner alert-error hidden" role="alert">
+          <div class="alert-body">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 8v5M12 16.5v.5" stroke-linecap="round"></path>
+            </svg>
+            <p id="error-message" class="alert-text">Panel verileri yüklenemedi.</p>
+          </div>
+          <button id="retry-btn" type="button" class="btn btn-outline btn-sm">Yeniden dene</button>
+        </div>
+
+        <div id="notice-banner" class="alert-banner hidden" role="status">
+          <div class="alert-body">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M10 9v6M14 9v6" stroke-linecap="round"></path>
+            </svg>
+            <p id="notice-message" class="alert-text"></p>
+          </div>
+          <button id="notice-resume-btn" type="button" class="btn btn-outline btn-sm hidden">Şimdi devam et</button>
+        </div>
+
+        <section id="loading-skeleton" class="skeleton-grid" aria-label="Veriler yükleniyor">
+          <div class="skeleton-strip"></div>
+          <div class="skeleton-row">
+            <div class="skeleton-panel"></div>
+            <div class="skeleton-panel"></div>
+          </div>
+        </section>
+
+        <section
+          id="memory-hero"
+          aria-labelledby="h-hero"
+          class="memory-hero hidden"
+          data-views="overview"
+          data-hero-state="active"
+        >
+          <div class="hero-main">
+            <div class="hero-narrative">
+              <h2 id="h-hero" class="hero-heading">Bugünkü hafıza</h2>
+              <div class="hero-figure-row">
+                <span id="hero-events" class="hero-count">0</span>
+                <span class="hero-unit">olay</span>
+              </div>
+              <p id="hero-summary" class="hero-summary"></p>
+            </div>
+
+            <div class="hero-telemetry">
+              <div class="hero-spark-head">
+                <span id="hero-sensor-badge" class="hero-sensor-badge">Aktif</span>
+                <span id="hero-spark-label" class="hero-spark-label">Gün çizgisi</span>
+              </div>
+              <svg
+                id="hero-sparkline"
+                class="hero-sparkline"
+                viewBox="0 0 200 44"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              ></svg>
+            </div>
+          </div>
+
+          <div class="hero-substrip">
+            <div class="hero-subcell">
+              <span class="hero-sublabel">Atılan pencere</span>
+              <span id="kpi-dropped" class="hero-subvalue">0</span>
+              <span id="kpi-dropped-note" class="hero-subnote">Parola yöneticisi, gizli sekme, .env</span>
+            </div>
+            <div class="hero-subcell">
+              <span class="hero-sublabel">Hafıza boyutu</span>
+              <span id="kpi-db-size" class="hero-subvalue">—</span>
+              <span class="hero-subnote">Şifreli, bu bilgisayarda</span>
+            </div>
+            <div class="hero-subcell">
+              <span class="hero-sublabel">Son arama</span>
+              <span id="kpi-last-search" class="hero-subvalue">Henüz yok</span>
+              <span class="hero-subnote">Hibrit BM25 + vektör</span>
+            </div>
+          </div>
+        </section>
+
+        <div id="content-grid" class="workspace-grid hidden">
+          <div class="primary-column">
+            <section aria-labelledby="h-zincir" class="surface-panel" data-views="overview">
+              <div class="panel-head">
+                <h2 id="h-zincir">Ne yapmaya çalışıyordun</h2>
+                <span id="chain-window" class="panel-meta">Son nedensellik zinciri</span>
+              </div>
+
+              <ol id="chain-list" class="chain-list"></ol>
+
+              <div id="chain-empty" class="empty-box hidden">
+                <p class="empty-title">Bugün henüz nedensellik zinciri oluşmadı</p>
+                <p class="empty-desc">
+                  Uygulamalar arasında geçiş yaptığınızda veya hata araması sonrasında kod kopyaladığınızda bağlantılar burada görünür.
+                </p>
+              </div>
+
+              <div class="action-row">
+                <button id="open-chain-btn" type="button" class="btn btn-primary" disabled>Zinciri aç</button>
+                <button id="search-similar-btn" type="button" class="btn btn-outline" disabled>Benzer anları ara</button>
+              </div>
+
+              <div id="chain-details" class="chain-details hidden" aria-live="polite"></div>
+            </section>
+
+            <section id="hourly-section" aria-labelledby="h-gun" class="surface-panel" data-views="overview activity">
+              <div class="panel-head">
+                <h2 id="h-gun">Gün boyu yakalanan olaylar</h2>
+                <span id="hourly-meta" class="panel-meta">Saat başına olay</span>
+              </div>
+
+              <div id="hourly-chart-wrap" class="chart-wrap">
+                <div id="hourly-bars" class="hourly-bars" role="list" aria-label="Saatlik yakalanan olay dağılımı"></div>
+                <div id="hourly-labels" class="hourly-labels" aria-hidden="true"></div>
+              </div>
+
+              <p id="hourly-summary" class="chart-footnote"></p>
+              <span id="hourly-sr-summary" class="sr-only"></span>
+            </section>
+
+            <section aria-labelledby="h-app" class="surface-panel" data-views="overview activity">
+              <div class="panel-head">
+                <h2 id="h-app">Uygulamalar</h2>
+                <span class="panel-meta">Bugünkü olay payı</span>
+              </div>
+              <div id="apps-list" class="apps-list"></div>
+              <div id="apps-empty" class="empty-box hidden">
+                <p class="empty-title">Henüz kayıtlı uygulama etkinliği yok</p>
+                <p class="empty-desc">
+                  Pencere odağı değiştikçe en çok etkinlik yakalanan uygulamalar burada sıralanır.
+                </p>
+              </div>
+            </section>
+          </div>
+
+          <div class="secondary-column">
+            <section aria-labelledby="h-gizlilik" class="surface-panel" data-views="overview privacy">
+              <div class="panel-head">
+                <h2 id="h-gizlilik">Diske hiç ulaşmayanlar</h2>
+              </div>
+              <p class="panel-desc">Bellekte maskelendi ya da atıldı. Ham hali kaydedilmedi.</p>
+
+              <div id="redactions-list" class="ledger-list"></div>
+
+              <h3 class="sub-heading">Tamamen atılan pencereler</h3>
+              <div id="dropped-list" class="kv-list"></div>
+            </section>
+
+            <section aria-labelledby="h-kontrol" class="surface-panel" data-views="overview controls privacy">
+              <div class="panel-head">
+                <h2 id="h-kontrol">Kontrol sende</h2>
+              </div>
+
+              <div class="control-stack">
+                <button id="pause-toggle-btn" type="button" class="control-action">
+                  <span class="control-title" id="pause-btn-title">Yakalamayı 1 saat duraklat</span>
+                  <span class="control-hint" id="pause-btn-hint">Süre dolunca otomatik devam eder</span>
+                </button>
+
+                <button id="blocklist-toggle-btn" type="button" class="control-action" aria-expanded="false" aria-controls="blocklist-drawer">
+                  <span class="control-title">Bir uygulamayı hiç kaydetme…</span>
+                  <span class="control-hint">Çalışma anında süreç engelle</span>
+                </button>
+
+                <div id="blocklist-drawer" class="inline-drawer hidden">
+                  <form id="blocklist-form" class="inline-form">
+                    <label for="blocklist-input" class="sr-only">Engellenecek uygulama süreç adı</label>
+                    <input
+                      id="blocklist-input"
+                      type="text"
+                      class="inline-input"
+                      placeholder="ör. slack.exe veya whatsapp"
+                      autocomplete="off"
+                      spellcheck="false"
+                      maxlength="128"
+                    />
+                    <button type="submit" class="btn btn-primary btn-sm">Ekle</button>
+                    <button id="blocklist-cancel-btn" type="button" class="btn btn-outline btn-sm">Kapat</button>
+                  </form>
+                  <div id="blocklist-chips" class="blocklist-chips" aria-live="polite"></div>
+                </div>
+
+                <button id="delete-recent-btn" type="button" class="control-action">
+                  <span class="control-title">Son 15 dakikayı sil</span>
+                  <span class="control-hint">İlgili vektör ve kenarlarla birlikte kaldırır</span>
+                </button>
+
+                <button id="delete-all-open-btn" type="button" class="control-action control-action-danger" aria-expanded="false" aria-controls="delete-all-confirm">
+                  <span class="control-title">Tüm hafızayı sil…</span>
+                  <span class="control-hint">İki adımlı onay ve disk temizliği (VACUUM)</span>
+                </button>
+
+                <div id="delete-all-confirm" class="confirm-box hidden" role="alertdialog" aria-labelledby="confirm-title">
+                  <p id="confirm-title" class="confirm-text">
+                    Tüm şifreli olaylar, vektörler ve nedensellik bağları kalıcı olarak silinip veritabanı sıkıştırılacak. Devam edilsin mi?
+                  </p>
+                  <div class="confirm-actions">
+                    <button id="delete-all-confirm-btn" type="button" class="btn btn-danger btn-sm">Evet, tümünü sil</button>
+                    <button id="delete-all-cancel-btn" type="button" class="btn btn-outline btn-sm">Vazgeç</button>
+                  </div>
+                </div>
+              </div>
+
+              <p id="control-feedback" class="control-feedback hidden" role="status"></p>
+            </section>
+
+            <section aria-labelledby="h-sistem" class="surface-panel" data-views="overview controls">
+              <div class="panel-head">
+                <h2 id="h-sistem">Sistem</h2>
+              </div>
+              <div id="system-list" class="kv-list"></div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/panel.ts"></script>
+  </body>
+</html>
