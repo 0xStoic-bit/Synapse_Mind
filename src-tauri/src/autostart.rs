@@ -166,8 +166,10 @@ fn is_enabled_in_subkey(subkey: &str, value_name: &str) -> bool {
     }
 
     let units: Vec<u16> = buf[..(read_len as usize).min(buf.len())]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|&u| u != 0)
         .collect();
     let text = String::from_utf16_lossy(&units);

@@ -27,10 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rust araç zinciri
+      - name: Rust araç zinciri (rust-toolchain.toml)
         run: |
-          rustup toolchain install stable --profile minimal -c rustfmt,clippy
-          rustup default stable
+          rustup toolchain install
 
       - uses: actions/cache@v4
         with:
