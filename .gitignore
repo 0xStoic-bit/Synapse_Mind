@@ -13,7 +13,6 @@ benchmarks/target/
 *.dmp
 *.minidump
 .env
-.claude/settings.local.json
 node_modules/
 ui/dist/
 
@@ -23,14 +22,11 @@ graphify-out/
 # Üçüncü taraf UI skill'leri (impeccable, ui-ux-pro-max, react-native-skills):
 # lisans dosyası yok; yerelde kullanılır, depoya girmez (orkestratör kararı 20.11.2026)
 .agents/skills/
-.claude/skills/impeccable/
-.claude/skills/ui-ux-pro-max/
-.claude/skills/react-native-skills/
-
-# Makineye özel Claude Code ayarları (mutlak yollu graphify kancaları); yerelde kalır
-.claude/settings.json
 
 # Günlükler ve işletim sistemi artıkları
 *.log
 Thumbs.db
 desktop.ini
+
+# Claude Code yerel klasörü (ajan tanımları, skill'ler, ayarlar) depoya girmez
+.claude/
