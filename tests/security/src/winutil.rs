@@ -544,13 +544,8 @@ pub fn foreground_info() -> String {
     format!("pid={pid} exe={exe} baslik={title:?}")
 }
 
-/// Overlay penceresini ön plana getirmeyi dener ve yalnızca DOĞRULANMIŞ ön plan için `true` döner.
-///
-/// Her denemede: (1) overlay GÖRÜNÜR değilse Alt+Space (kısayol AÇ/KAPA anahtarıdır; görünürken basılsaydı gizlerdi,
-/// bu yüzden yalnız gizliyken basılır) ve görünür olana kadar en çok `show_wait` beklenir (uygulama başlangıcı /
-/// gömme modeli yüklemesi ilk gösterimi geciktirebilir); (2) görünürse ama ön planda değilse `activate_window_titled`
-/// (Alt hilesi + AttachThreadInput); (3) ön plan `pids` içindeyse ve overlay hâlâ görünürse `true`. Her denemenin
-/// durumu `log` ile çağırana verilir. Girdi enjekte edilmez: çağıran yalnızca `true` ise yazar.
+/// Overlay'i ön plana getirmeye çalışır; yalnızca doğrulanmış ön plan için `true` döner. Gizliyse
+/// Alt+Space basılır ve görünür olması beklenir, arkadaysa odak zorlanır. Girdi enjekte edilmez.
 pub fn ensure_overlay_foreground(
     pids_of: &mut dyn FnMut() -> Vec<u32>,
     needle: &str,

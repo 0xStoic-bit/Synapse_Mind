@@ -1,12 +1,9 @@
-//! Gate 2 (RAM dump) altyapısı. Sahibi: redteam-auditor.
+//! Gate 2 (RAM dökümü) altyapısı.
 //!
-//! * `spec`    : denetçi -> hedef paket tarifi (ikili); hedef sırları dosyadan okur, kendi üretmez.
-//! * `scan`    : döküm dosyasında UTF-8 + UTF-16LE sır arama, döküm düzeni (yığın/yığın dışı) ayrıştırma.
-//! * `dump`    : `MiniDumpWriteDump` (MiniDumpWithFullMemory) ile canlı çocuk süreç dökümü.
-//! * `session` : hedefi başlat -> READY bekle -> döküm -> tara -> öldür -> döküm dosyasını sil.
+//! * `spec`: hedef paket tarifi · `scan`: UTF-8 + UTF-16LE sır arama · `dump`: `MiniDumpWriteDump`
+//!   ile canlı döküm · `session`: başlat → döküm → tara → öldür → döküm dosyasını sil.
 //!
-//! Hedef ikili (`gate2-target`) bu lib'in yalnızca `spec` modülünü kullanır ve `s-redteam`'e
-//! bağlanmaz: hedefin imajında sentetik sır literali bulunmaz. TÜM VERİLER SENTETİKTİR.
+//! Hedef ikili `s-redteam`'e bağlanmaz; imajında sentetik sır literali bulunmaz.
 
 pub mod scan;
 pub mod spec;

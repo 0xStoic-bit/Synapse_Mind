@@ -246,15 +246,11 @@ impl<E: Embedder> MemoryStore<E> {
             .map_err(|_| CoreError::IntegerOverflow("negative pending backfill count"))
     }
 
-    /// Ensures `event_vectors` matches the active ready embedder's [`Embedder::model_id`].
+    /// Ensures `event_vectors` matches the ready embedder's [`Embedder::model_id`].
     ///
-    /// - While `self.embedder.is_ready()` is `false` (downloading or BM25 fallback), this is a
-    ///   strict no-op returning `Ok(false)` without writing `store_meta` or deleting vectors.
-    /// - When ready and `store_meta['embedding_model_id']` matches `self.embedder.model_id()`,
-    ///   returns `Ok(false)` idempotently.
-    /// - When ready and the stored identifier is absent or differs, atomically clears
-    ///   `event_vectors` (if any vectors exist) and updates `store_meta['embedding_model_id']` in
-    ///   a single SQLite transaction. Returns `Ok(true)` when existing vectors were cleared.
+    /// No-op (`Ok(false)`) while the embedder is not ready or the stored id already matches.
+    /// Otherwise clears `event_vectors` and updates `store_meta['embedding_model_id']` in one
+    /// transaction; returns `Ok(true)` when vectors were cleared.
     pub fn reconcile_embedding_model(&mut self) -> Result<bool> {
         if !self.embedder.is_ready() {
             return Ok(false);
@@ -269,12 +265,9 @@ impl<E: Embedder> MemoryStore<E> {
         Ok(cleared)
     }
 
-    /// Returns the next monotonic `event_id` (`0` on an empty store, or `MAX(event_id) + 1`).
-    ///
-    /// Intended to be called once after opening the store and before starting
-    /// `s_guard::run_with_start_id` and `run_ingestion` (ADR-001). Rejects negative
-    /// or `i64::MAX` database IDs with [`CoreError::IntegerOverflow`] instead of
-    /// silently falling back to `0`.
+    /// Returns the next monotonic `event_id` (`0` on an empty store, else `MAX(event_id) + 1`).
+    /// Call once after opening, before starting the guard and ingestion tasks. Out-of-range
+    /// ids return [`CoreError::IntegerOverflow`].
     pub fn next_event_id(&self) -> Result<u64> {
         let max_id: Option<i64> =
             self.conn
@@ -294,22 +287,15 @@ impl<E: Embedder> MemoryStore<E> {
         }
     }
 
-    /// Stores a new sanitized `MaskedMemoryBlock`, indexes FTS5 + `vec0`
-    /// (when `has_embedding_payload`), and computes rule-based `CausalityEdge`
-    /// links against preceding events.
-    ///
-    /// Rejects duplicate `event_id` values with [`CoreError::DuplicateEventId`]
-    /// so production ingestion never silently overwrites existing events (ADR-001).
-    /// Use [`MemoryStore::upsert_block`] when explicit re-indexing is intended.
+    /// Stores a sanitized block, indexes FTS5 and `vec0`, and links it to preceding events.
+    /// Duplicate ids return [`CoreError::DuplicateEventId`]; use [`MemoryStore::upsert_block`]
+    /// for intentional re-indexing.
     pub fn ingest_block(&mut self, block: &MaskedMemoryBlock) -> Result<Vec<CausalityEdge>> {
         self.store_block_inner(block, false)
     }
 
-    /// Inserts or replaces an existing `MaskedMemoryBlock` by `event_id` while
-    /// preserving connected `causality_edges` (for explicit re-indexing only).
-    ///
-    /// Production ingestion paths must use [`MemoryStore::ingest_block`] or
-    /// [`run_ingestion`] so `event_id` collisions surface as errors.
+    /// Inserts or replaces a block by `event_id`, keeping its causality edges. Re-indexing only;
+    /// ingestion uses [`MemoryStore::ingest_block`] so id collisions surface as errors.
     pub fn upsert_block(&mut self, block: &MaskedMemoryBlock) -> Result<Vec<CausalityEdge>> {
         self.store_block_inner(block, true)
     }
@@ -363,11 +349,8 @@ impl<E: Embedder> MemoryStore<E> {
         Ok(created_edges)
     }
 
-    /// Ingests a slice of `MaskedMemoryBlock` events in order, returning all created causality edges.
-    ///
-    /// Computes embeddings for all embeddable blocks in a single [`Embedder::embed_batch`] call
-    /// (allowing [`DualEmbedder`](crate::DualEmbedder) to route batch ingestion to INT8) and writes
-    /// all rows and causality edges inside a single SQLite transaction.
+    /// Ingests blocks in order with one [`Embedder::embed_batch`] call and one transaction;
+    /// returns all created causality edges.
     pub fn ingest_batch(&mut self, blocks: &[MaskedMemoryBlock]) -> Result<Vec<CausalityEdge>> {
         if blocks.is_empty() {
             return Ok(Vec::new());
@@ -1426,13 +1409,9 @@ pub(crate) fn sanitize_fts_query(raw: &str) -> Option<String> {
     sanitize_fts_query_limited(raw, DEFAULT_MAX_BM25_TERMS).map(|(query, _)| query)
 }
 
-/// Converts `raw` into a deduplicated, term-bounded FTS5 `OR` query, returning
-/// `(fts_query, was_term_truncated)`.
-///
-/// When unique tokens exceed `max_terms`, prioritizes informative tokens (`>= 3` chars and not
-/// pure ASCII digits) over 1–2 char fragments / numeric tokens so timestamps, line numbers, and
-/// short connectors do not crowd out error codes or domain terms. Short queries (`<= max_terms`)
-/// keep all tokens in their original order.
+/// Builds a deduplicated FTS5 `OR` query of at most `max_terms` terms; returns
+/// `(fts_query, was_term_truncated)`. When truncating, informative tokens (3+ chars, not
+/// purely numeric) win over short fragments and numbers.
 pub(crate) fn sanitize_fts_query_limited(raw: &str, max_terms: usize) -> Option<(String, bool)> {
     if max_terms == 0 {
         return None;
@@ -3307,7 +3286,7 @@ mod tests {
 
             drop(reopened);
 
-            // 5. Iron Rule 7 check: disk bytes must remain encrypted with zero plaintext leaks.
+            // 5. Disk bytes must stay encrypted: no plaintext leaks.
             let raw_bytes = std::fs::read(&db_path).expect("read encrypted bytes");
             assert!(!raw_bytes.starts_with(b"SQLite format 3\0"));
             assert!(!contains_subslice(&raw_bytes, b"MIGRATION_SENTINEL_11"));

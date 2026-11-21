@@ -1,28 +1,15 @@
-//! UIA çıkarım yalıtımı: önceden ısıtılmış tek kullanımlık yardımcı işçi süreç.
+//! UIA okumasının tek kullanımlık işçi süreçte yalıtılması.
 //!
-//! Sorun: `UIAutomationCore.dll`, süreç dışı bir pencereden okuduğu UTF-16 metni kendi iç
-//! NT heap tamponlarına (RPC/C++ ara kopyaları) yazar ve `HeapFree` ile SIFIRLAMADAN serbest
-//! bırakır. Bu tamponlar `s-sensor`'dan erişilemez; çağıran süreç uzun ömürlüyse kalıntı
-//! RAM'de (ve bir bellek dökümünde) kalır.
+//! `UIAutomationCore.dll` okuduğu metni kendi heap tamponlarına yazar ve sıfırlamadan
+//! serbest bırakır; uzun ömürlü bir süreçte bu kalıntı bellekte kalır. Bu yüzden:
+//! - Her an en fazla bir önceden ısıtılmış (COM + UIA kurulu, henüz pencere okumamış) işçi
+//!   hazır bekler. İstek (yalnızca `HWND` ve sınırlar) `stdin` ile gider, işçi tek pencereyi
+//!   okur, sonucu yazar ve öldürülür; çekirdek sayfalarını sıfırlayarak geri alır.
+//! - İşçiler `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` iş nesnesine atanır; ana süreç ölürse ölürler.
+//! - `Suspended` durumunda yedek işçi tutulmaz.
 //!
-//! Çözüm ([`UiaIsolation::Worker`], varsayılan):
-//! - Ana süreçte her an en fazla **bir** boşta bekleyen, önceden ısıtılmış (`COM` + `UIA`
-//!   kurulu, `SRWR` el sıkışması tamamlanmış, henüz HİÇBİR pencere okumamış) tek kullanımlık
-//!   işçi hazır bekler.
-//! - Bir okuma isteği gelince istek (yalnızca sayılar: `HWND` ve sınırlar) `stdin` borusundan
-//!   iletilir; işçi okur, `SRW1` çerçevesini yazar; ana süreç çerçeveyi okuduktan hemen sonra
-//!   `TerminateProcess` + `wait` ile işçiyi öldürür ve arka planda bir sonraki yedeği ısıtır.
-//! - Hiçbir işçi birden fazla gerçek pencere okumaz; süreç sonlandığında çekirdek tüm özel
-//!   sayfaları sıfır-sayfa listesine iade eder.
-//! - `JobObject` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ile tüm işçiler ana sürecin job'una
-//!   atanır; ana süreç ölürse işçiler de çekirdek tarafından öldürülür.
-//! - `Suspended` / oyun modunda boşta bekleyen yedek öldürülür ve yeni yedek başlatılmaz;
-//!   `Active` durumuna dönüldüğünde yeniden ısıtılır.
-//!
-//! Ana süreçteki ham kopya: TEK. Gövde, `Zeroizing<Vec<u8>>` içine tam boyutla ayrılmış tampona
-//! `read_exact` ile doğrudan okunur (ara kopya/yeniden tahsis yok), `String::from_utf8` ile
-//! kopyasız `Zeroizing<String>`'e taşınır ve oradan `RawCapturePacket`'e (`ZeroizeOnDrop`)
-//! `mem::take` ile geçer. Hata yollarında kısmi gövde sıfırlanır.
+//! Ana süreçte tek ham kopya olur: gövde tam boyutlu `Zeroizing<Vec<u8>>` tampona okunur ve
+//! kopyalanmadan `RawCapturePacket`'e taşınır; hata yollarında kısmi gövde sıfırlanır.
 
 use std::io::{self, Read};
 use std::sync::Mutex;
@@ -89,12 +76,8 @@ pub const DEFAULT_WORKER_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 static HOST_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Ana yürütülebilir dosyanın `main` başında çağrılır.
-///
-/// * `argv[1] == WORKER_ARG` ise bu süreç UIA işçisidir: `SetOaNoCache` + `COM`/`UIA` kurar,
-///   hazır el sıkışması yapar, `stdin`'den gelen tek sayısal isteği işler, çerçeveyi yazar ve
-///   **geri dönmez** (`process::exit`).
-/// * Aksi halde, bu süreçte işçi kancasının kurulu olduğunu kaydeder ve hemen döner.
+/// `main`'in başında çağrılır. `argv[1] == WORKER_ARG` ise süreç UIA işçisi olarak tek isteği
+/// işler ve geri dönmez; değilse işçi kancasının kurulu olduğunu kaydedip döner.
 pub fn run_uia_worker_if_requested() {
     let mut args = std::env::args_os();
     let _exe = args.next();
@@ -342,11 +325,11 @@ pub(crate) mod win32 {
     /// 2. `stdout`'a `SRWR` (veya `SRWE`) yazar ve `stdin`'den 32 baytlık `SRQ1` isteğini bekler.
     /// 3. İstek gelince tek pencereyi okur, `SRW1` çerçevesini yazar ve çıkar (veya ana süreç öldürür).
     pub(crate) fn worker_main() -> ! {
-        // İşçi GUI alt sistemli exe'dir ve hiç pencere açmaz; Windows her işçi başlatıldığında
-        // "uygulama başlıyor" imlecini 5-7 sn gösterir. İlk `GetMessage` bu imleci kapatır.
+        // İşçi pencere açmayan bir GUI sürecidir; ilk `GetMessage` Windows'un başlatma
+        // imlecini (APPSTARTING) hemen kapatır.
         dismiss_launch_feedback_cursor();
 
-        // Graft 2: BSTR önbelleği YALNIZCA tek kullanımlık işçi süreçte, UIA öncesi kapatılır.
+        // BSTR önbelleği yalnızca işçi süreçte, UIA öncesi kapatılır.
         disable_oleaut_bstr_cache();
 
         let extractor = match UiaExtractor::new() {
@@ -1070,7 +1053,7 @@ pub(crate) mod win32 {
     }
 }
 
-// --------------------------------------------------------------- ölçüm (R2) arayüzü
+// --------------------------------------------------------------- ölçüm arayüzü
 
 /// Yalnızca metadata içeren çıkarım istatistiği (ölçüm araçları için; ham metin DIŞARI verilmez).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

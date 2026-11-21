@@ -28,8 +28,7 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// Hafıza Paneli sırası (BOARD): `API_KEY, CREDIT_CARD, TC_KIMLIK, SSN, EMAIL,
-    /// PRIVATE_KEY, JWT, PASSWORD`.
+    /// Hafıza Paneli sırası: `API_KEY, CREDIT_CARD, TC_KIMLIK, SSN, EMAIL, PRIVATE_KEY, JWT, PASSWORD`.
     pub(crate) const PANEL_ORDER: [Kind; 8] = [
         Kind::ApiKey,
         Kind::CreditCard,
@@ -244,12 +243,8 @@ thread_local! {
     static WARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// İş parçacığı başına bir kez, ham metin hiç işlenmeden ÖNCE regex önbelleklerini oluşturur.
-///
-/// Regex `Cache` yapıları ilk aramada, çağıranın yığınında kurulup heap'e taşınır; o anda yığında
-/// önceki taramalardan kalan ham metin parçaları (SIMD yazmaç dökümleri, dolgu baytları) varsa
-/// uzun ömürlü önbelleğin içine kopyalanır. Önbellekler yığın temizken kurulursa kopyalanacak
-/// ham parça olmaz.
+/// Regex önbelleklerini iş parçacığı başına bir kez, ham metin işlenmeden ÖNCE kurar.
+/// Önbellekler ilk aramada yığından heap'e taşınır; yığın o an temizse içine ham parça kopyalanmaz.
 pub(crate) fn warm_up_thread() {
     if WARMED.with(|w| w.replace(true)) {
         return;
@@ -1553,7 +1548,7 @@ mod tests {
         assert_eq!(n("use the sk_live_ prefix"), 0);
     }
 
-    // --- Sprint 2: stretch 1-7 ---
+    // --- Gizleme ve kaçış varyantları ---
 
     #[test]
     fn password_in_plain_sentence() {
@@ -1662,7 +1657,7 @@ mod tests {
         assert_eq!(n("q8Zx3LmP0vTt7RkW2yUe9HbN5cAj"), 1);
     }
 
-    // --- Sprint 3 R1: stretch2 sızıntıları ve yanlış pozitif sondaları ---
+    // --- Çok satırlı sızıntılar ve yanlış pozitif sondaları ---
 
     #[test]
     fn dot_and_underscore_separated_card_and_tc() {
@@ -1852,7 +1847,7 @@ mod tests {
         );
     }
 
-    // --- Sprint 3 R2 ---
+    // --- Ek kaçış ve kodlama varyantları ---
 
     #[test]
     fn hex_label_window_covers_line_previous_line_and_after() {
@@ -2047,7 +2042,7 @@ mod tests {
         }
     }
 
-    // --- Sprint 4: R3 ---
+    // --- Ek sızıntı vektörleri ---
 
     #[test]
     fn r3_type_contexts_and_assignments() {

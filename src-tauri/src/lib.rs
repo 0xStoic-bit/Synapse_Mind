@@ -216,10 +216,8 @@ fn project_tokens_to_unit(text: &str) -> Vec<f32> {
     vec
 }
 
-/// Uygulama gömücü yapılandırması (kullanıcı kararı, 21.11.2026; benchmark.md v0.1.1-b):
-/// tek FP32 oturum (`SingleFp32`, sorgu ve indeksleme aynı vektör uzayında),
-/// ONNX Runtime CPU bellek arenası kapalı ve 10 dk boşta kalınca oturum boşaltma.
-/// Hedef: boşta < 50 MB, aktifken ~200 MB altı, sorgu gömme p95 < 20 ms.
+/// Gömücü: tek FP32 oturum (sorgu ve indeksleme aynı vektör uzayında), ONNX Runtime CPU
+/// arenası kapalı; oturum 10 dk boşta kalınca boşaltılır.
 #[cfg(feature = "fastembed")]
 fn app_fastembed_config() -> s_core::FastEmbedConfig {
     s_core::FastEmbedConfig {
@@ -278,11 +276,8 @@ fn build_embedder() -> s_core::Result<AppEmbedder> {
     }
 }
 
-/// Opens or creates the SQLCipher-encrypted `MemoryStore` at `db_path` using
-/// the DPAPI-unwrapped 256-bit `db_key` (Iron Rule 7) and attaches `embedder`.
-///
-/// In debug builds, seeds synthetic `[DEMO]` blocks only when the store is empty
-/// so subsequent restarts never collide on `event_id` (ADR-001).
+/// Opens or creates the encrypted store at `db_path` with the DPAPI-unwrapped key.
+/// Debug builds seed synthetic `[DEMO]` blocks only into an empty store.
 fn init_store_with_embedder(
     db_path: &Path,
     db_key: &DbKey,
@@ -645,11 +640,8 @@ pub mod commands {
         Ok(cfg!(debug_assertions))
     }
 
-    /// Opens (or focuses) the Memory Panel window with `WDA_EXCLUDEFROMCAPTURE` applied
-    /// before the window is shown. Restricted to `"main"`.
-    ///
-    /// `async`: Tauri 2'de Windows'ta senkron komut içinde pencere oluşturmak ana iş
-    /// parçacığında kilitlenmeye yol açar; komut bu yüzden async (async runtime'da çalışır).
+    /// Opens or focuses the Memory Panel with `WDA_EXCLUDEFROMCAPTURE` applied before it is
+    /// shown. Async because creating a window in a sync command deadlocks on Windows.
     #[tauri::command]
     pub async fn open_memory_panel(caller: tauri::WebviewWindow) -> Result<(), String> {
         ensure_window_label(caller.label(), OVERLAY_WINDOW_LABEL)?;

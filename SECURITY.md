@@ -1,6 +1,6 @@
 # Güvenlik Politikası
 
-Sahibi: `security-writer`. Kapsam: Synapse Mind v0.1.0. Ayrıntılı analiz: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Teknik kurallar: `RULES_AND_SKILLS.md` §2 (Iron Rules).
+Kapsam: Synapse Mind v0.1.x. Ayrıntılı analiz: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 > **Sürüm durumu:** v0.1.0 için sürüm etiketi kullanıcı onayıyla atılır. Aşağıdaki "doğrulandı" ifadeleri yalnızca belirtilen testler ve kapsam için geçerlidir. Resmi Gate 2 sonucu "Doğrulama durumu" bölümündeki yer tutucuya yazılır.
 
@@ -81,7 +81,7 @@ Pencere başlıkları ve kontrol (EDIT vb.) metinleri, Windows masaüstü yığ�
 
 ### Gate 1 (PII/sır sızma testi): PASS, kabul edilen risklerle
 
-Kaynak: `.agents/status/redteam-auditor.md`. Kullanıcı yazılı onayı: 19.11.2026. Bağımsız redteam (`s-redteam`), hepsi sentetik veri.
+Kaynak: bağımsız redteam test paketi (`tests/redteam`, `s-redteam`), hepsi sentetik veri. Yazılı onay: 19.11.2026.
 
 - Sözleşme vektör seti: Core 60, Evasion 40, Blacklist 26, Control 31. Pencere=6'da maskelenmemiş karakter yok.
 - **R1, R2, R3 kapandı:** `r1-*` 54/54, `r2-*` 54/54, stretch 16 ve stretch2 28 temiz; zorunlu kontroller 38/38.
@@ -139,7 +139,7 @@ Sınır: yığın silme, `evaluate`'i çağıran iş parçacığı için geçerl
 
 ## Kabul edilen riskler
 
-Kullanıcının yazılı onayı: **19.11.2026**. Her satır redteam'in `.agents/status/redteam-auditor.md` tablosundan ve guard raporlarından alınmıştır. Kabul edilmeyen madde sürümü bloke eder (VETO).
+Yazılı onay: **19.11.2026**. Her satır redteam test sonuçlarından ve guard raporlarından alınmıştır. Kabul edilmeyen madde sürümü bloke eder (VETO).
 
 | # | Madde | Örnek / kapsam | Neden kapatılamıyor | Gerçekçilik |
 |---|---|---|---|---|
@@ -182,4 +182,4 @@ cargo test -p s-types
 cd tests/security && cargo test
 ```
 
-Gate 2 komutları ve `check_sync.sh` için `.agents/status/redteam-auditor.md` dosyasına bakın. Genel derleme/test komutları: [komutlar.txt](komutlar.txt).
+Gate 1, Gate 2 ve genel derleme/test komutları: [komutlar.txt](komutlar.txt).

@@ -1,49 +1,35 @@
-//! # s-guard — Zero-Trust In-Memory Security Gate (Katman 2)
+//! # s-guard: bellek içi güvenlik kapısı
 //!
-//! Sahibi: `zero-trust-guard`.
 //! Girdi: `Receiver<RawCapturePacket>` · Çıktı: `Sender<MaskedMemoryBlock>`.
 //!
-//! Akış (`process`):
-//! 1. Kara liste (süreç adı, parola yöneticisi başlığı, gizli pencere, hassas dosya,
-//!    yok sayılan pano biçimi) -> `Verdict::Dropped`.
-//! 2. Pencere başlığı ve metin payload'ı scrubber'dan geçer (`[REDACTED_<TÜR>]`).
-//! 3. `ScreenFrame`: Sprint 1'de OCR yok; metin boş, pikseller `zeroize`.
-//! 4. Ham kopyalar (başlık, süreç adı, payload, katlanmış geçici stringler) her
-//!    çıkış yolunda `zeroize` edilir.
+//! 1. Kara liste (süreç, parola yöneticisi, gizli pencere, hassas dosya, yok sayılan pano
+//!    biçimi) eşleşirse paket düşürülür.
+//! 2. Başlık ve metin maskeleyiciden geçer (`[REDACTED_<TÜR>]`).
+//! 3. Ham kopyalar her çıkış yolunda `zeroize` edilir. Bu crate hiçbir şey loglamaz.
 //!
-//! Hiçbir log/panic mesajı ham içerik taşımaz; bu crate hiçbir şey loglamaz.
+//! # Veritabanı anahtarı
 //!
-//! # Veritabanı anahtarı kullanım kılavuzu
-//!
-//! 256-bit DB anahtarı bellekte mümkün olduğunca az kopyalanmalıdır. `Zeroizing<[u8; 32]>`
-//! DEĞERLE taşınırsa (fonksiyon dönüşü, `Option`/`Result` sarmalama) çağrı çerçevelerinde
-//! bayat yığın kopyaları kalabilir (Gate 2 bulgusu). Önerilen akış:
+//! Anahtar değerle taşınırsa çağrı çerçevelerinde bayat yığın kopyaları kalır. [`DbKey`]
+//! anahtarı heap'te tek kutuda tutar; baytlara yalnızca ödünç erişilir:
 //!
 //! ```no_run
 //! use s_guard::DbKey;
 //!
 //! # fn run(blob_on_disk: Option<Vec<u8>>) -> s_guard::Result<()> {
-//! // İlk çalıştırma: yeni anahtar üret, DPAPI ile sar, blob'u (anahtarı değil) diske yaz.
-//! // Sonraki çalıştırmalar: blob'dan yükle. Anahtar heap'te tek kutuda yerinde yazılır.
 //! let key = match blob_on_disk {
 //!     Some(blob) => DbKey::load(&blob)?,
 //!     None => {
 //!         let key = DbKey::generate();
-//!         let _blob_to_persist = key.protect()?; // dosya I/O çağıranın işi
+//!         let _blob_to_persist = key.protect()?; // diske anahtar değil, DPAPI blob'u yazılır
 //!         key
 //!     }
 //! };
-//! // Yalnızca ödünç erişim: `&[u8; 32]` ver (örn. SQLCipher raw key hex'i `Zeroizing`
-//! // bir String'e yazılır). `*key.expose()` ile `[u8; 32]` değerine KOPYALAMAYIN.
-//! let _borrowed: &[u8; 32] = key.expose();
+//! let _borrowed: &[u8; 32] = key.expose(); // `*key.expose()` ile kopyalamayın
 //! # Ok(()) }
 //! ```
 //!
-//! Kutu kullanılamıyorsa çağıranın kendi (tercihen `Zeroizing`, tek yerde yaşayan)
-//! tamponuna yazan [`generate_db_key_into`] / [`unprotect_key_into`] kullanılır.
-//! Değerle dönen `generate_db_key` / `unprotect_key` `#[deprecated]` durumdadır.
-//! `DbKey` ve DPAPI tamponu (`LocalFree` öncesi) Drop'ta sıfırlanır; `DbKey` bilinçli
-//! olarak `Clone`/`Copy`/`Debug` değildir. Dosya I/O `s-guard`'da değil, çağıranda.
+//! Kutu kullanılamıyorsa [`generate_db_key_into`] / [`unprotect_key_into`] çağıranın
+//! tamponuna yazar. Dosya I/O çağıranın işidir.
 
 mod blacklist;
 mod dpapi;
@@ -189,7 +175,7 @@ fn evaluate_inner(
 
     let (clean_text, text_kinds) = match &held.payload {
         RawPayload::AccessibilityText(t) | RawPayload::ClipboardText(t) => scrub::scrub_kinds(t),
-        // Sprint 1: OCR yok. Pikseller `Held::drop` ile sıfırlanır.
+        // OCR yok; pikseller `Held::drop` ile sıfırlanır.
         RawPayload::ScreenFrame { .. } => (String::new(), Vec::new()),
     };
 
@@ -226,15 +212,9 @@ pub async fn run(
     run_with_start_id(rx, tx, 0).await;
 }
 
-/// `run` ile aynı; `event_id` sayacı `start_id`'den başlar (ör. `store.next_event_id()`).
-///
-/// Regex taraması CPU-bound olduğundan `spawn_blocking` ile yürütülür; sıra korunur.
-/// Her paket (düşürülenler dahil) bir `event_id` tüketir. Düşürülen paketler ve işleme
-/// paniği yaşayan paketler (fail-closed) sessizce atılır.
-///
-/// Hat şu durumlarda sonlanır: `rx` kapanıp boşalırsa, `tx` kapanırsa veya `event_id`
-/// sayacı taşarsa (`u64::MAX` kullanıldıktan sonra yeni paket okunmaz, paket üretilmez,
-/// panik yoktur; `event_id` asla yinelenmez/sarılmaz).
+/// `run` ile aynı; `event_id` sayacı `start_id`'den başlar. Tarama `spawn_blocking` ile
+/// yürütülür, sıra korunur. Düşürülen ve panik yaşayan paketler de bir `event_id` tüketir.
+/// Hat `rx` ya da `tx` kapanınca veya sayaç `u64::MAX`'a ulaşınca durur; id hiç yinelenmez.
 pub async fn run_with_start_id(
     rx: tokio::sync::mpsc::Receiver<RawCapturePacket>,
     tx: tokio::sync::mpsc::Sender<MaskedMemoryBlock>,

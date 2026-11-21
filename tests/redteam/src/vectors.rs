@@ -1253,7 +1253,7 @@ fn controls() -> Vec<Vector> {
     ]
 }
 
-// ---------------------------------------------------------------------- Stretch
+// ---------------------------------------------------------------------- İleri kaçırma vektörleri
 
 /// Guard'ın bilinen sınırlamaları + ileri kaçırma: çift kodlama, base64 içinde sır,
 /// bölünmüş anahtarın küçük harfli son parçası, `+` ayraçlı kart, ayraçlı TC, vb.
@@ -1403,7 +1403,7 @@ fn stretch(r: &mut Rng) -> Vec<Vector> {
     v
 }
 
-// ------------------------------------------------- Sprint 2: ek kontroller / FP sondaları
+// ------------------------------------------------- Ek kontroller ve yanlış pozitif sondaları
 
 /// Ek zararsız kontroller (Masked, metin korunmuş, redactions == 0 ZORUNLU).
 fn controls_extra() -> Vec<Vector> {
@@ -1499,8 +1499,8 @@ fn controls_extra() -> Vec<Vector> {
     ]
 }
 
-/// Yanlış pozitif sondaları: guard bunları BİLİNÇLİ fail-closed maskeleyebilir (BOARD/guard notları);
-/// yalnızca raporlanır, asla başarısız etmez. Ölçü: kaç tanesi gereksiz maskelendi.
+/// Yanlış pozitif sondaları: guard bunları bilinçli olarak maskeleyebilir (fail-closed); yalnızca
+/// raporlanır, testi başarısız etmez.
 fn fp_probes() -> Vec<Vector> {
     let t = Tier::FpProbe;
     let c = |id: &str, text: &str, keep: &str| Vector::new(id, t, "fp_probe").text(text).keep(keep);
@@ -1573,10 +1573,10 @@ fn fp_probes() -> Vec<Vector> {
     ]
 }
 
-// ------------------------------------------------- Sprint 4: R3 teyidi, yeni sezgilere saldırı (r3-*)
+// ------------------------------------------------- r3: genişletilmiş kurallara saldırılar
 
-/// Guard'ın R3 sezgilerine (genel `Ident<..>` jenerik kuralı, `format!`/`concat!` sabitleri, yeniden yazılan
-/// `detect_key_line_end`, 3+ sözcük diceware, 6 kat base64 + UTF-16 data URI) saldıran sondalar.
+/// Genişletilmiş guard kurallarına (jenerik tanımlayıcılar, `format!`/`concat!` sabitleri, satır sonu
+/// anahtarları, diceware, çok katlı base64) saldıran sondalar.
 fn r3_probes(r: &mut Rng) -> Vec<Vector> {
     let mut v = Vec::new();
     let t = Tier::Stretch;
@@ -1960,7 +1960,7 @@ fn r3_probes(r: &mut Rng) -> Vec<Vector> {
     v
 }
 
-/// R3'te guard'ın kabul ettiği yeni FP'ler (bilgi).
+/// r3 turunda guard'ın kabul ettiği yanlış pozitifler (bilgi).
 fn fp_probes3() -> Vec<Vector> {
     let t = Tier::FpProbe;
     let c = |id: &str, text: &str, keep: &str| Vector::new(id, t, "fp_probe").text(text).keep(keep);
@@ -2067,10 +2067,10 @@ fn controls4() -> Vec<Vector> {
     ]
 }
 
-// ------------------------------------------------- Sprint 3: R2 teyidi, yeni sezgilere saldırı
+// ------------------------------------------------- r2: tip ayrıştırma ve iç içe kodlama saldırıları
 
-/// Guard'ın R2 sezgilerine (typeparse dilbilgisi, iç içe data URI, çok satırlı kuyruk, hex etiket penceresi,
-/// diceware) saldıran yeni sondalar. `r2-*`: kabul edilmemiş yüzey; `accepted-*`: guard'ın kabul ettiği risk.
+/// Tip ayrıştırma, iç içe data URI, çok satırlı kuyruk, hex etiket ve diceware kurallarına saldıran
+/// sondalar. `r2-*`: kabul edilmemiş yüzey; `accepted-*`: kabul edilmiş risk.
 fn r2_probes(r: &mut Rng) -> Vec<Vector> {
     let mut v = Vec::new();
     let t = Tier::Stretch;
@@ -2463,7 +2463,7 @@ fn r2_probes(r: &mut Rng) -> Vec<Vector> {
     v
 }
 
-/// Guard'ın R2'de kabul ettiği yeni FP'ler (bilgi) ve korunması gerekenler.
+/// r2 turunda guard'ın kabul ettiği yanlış pozitifler (bilgi) ve korunması gerekenler.
 fn fp_probes2() -> Vec<Vector> {
     let t = Tier::FpProbe;
     let c = |id: &str, text: &str, keep: &str| Vector::new(id, t, "fp_probe").text(text).keep(keep);
@@ -2605,7 +2605,7 @@ fn controls3() -> Vec<Vector> {
     ]
 }
 
-// ------------------------------------------------- Sprint 3: R1 istisnalarına karşı yeni bypass sondaları
+// ------------------------------------------------- r1: guard istisnalarına karşı bypass sondaları
 
 /// Rastgele küçük/büyük hex dizgisi.
 fn hex_str(r: &mut Rng, n: usize, upper: bool) -> String {
@@ -2613,8 +2613,8 @@ fn hex_str(r: &mut Rng, n: usize, upper: bool) -> String {
     if upper { s.to_uppercase() } else { s }
 }
 
-/// Guard'ın R1 istisnalarını (40/64 hex, tip anotasyonu, Word_Word_v3, data URI, kuyruk kod anahtar sözcükleri)
-/// hedefleyen bypass denemeleri. Kimlikler: `r1-*` (kabul edilmemiş yüzey), `accepted-*` (guard'ın kabul ettiği risk).
+/// Guard istisnalarını (40/64 hex, tip anotasyonu, Word_Word_v3, data URI, kuyruk anahtar sözcükleri)
+/// hedefleyen bypass denemeleri. `r1-*`: kabul edilmemiş yüzey; `accepted-*`: kabul edilmiş risk.
 fn r1_probes(r: &mut Rng) -> Vec<Vector> {
     let mut v = Vec::new();
     let t = Tier::Stretch;
@@ -2982,10 +2982,10 @@ fn r1_probes(r: &mut Rng) -> Vec<Vector> {
     v
 }
 
-// ------------------------------------------------- Sprint 2: Gate 1 yeniden koşu, ek stretch
+// ------------------------------------------------- Ek kaçırma varyantları
 
-/// Guard'ın yeni sezgilerini (durdurma listesi, 2 seviye çözme, tek seviye base64, >=8 kuyruk kuralı,
-/// ayraç kümesi) zorlayan ek kaçırma varyantları. Rapor amaçlıdır (Tier::Stretch).
+/// Durdurma listesi, iki seviye çözme, base64, kuyruk ve ayraç kurallarını zorlayan kaçırma
+/// varyantları. Yalnızca rapor (`Tier::Stretch`).
 fn stretch2(r: &mut Rng) -> Vec<Vector> {
     let mut v = Vec::new();
     let t = Tier::Stretch;
@@ -3228,7 +3228,7 @@ pub fn all_vectors() -> Vec<Vector> {
     v.extend(controls());
     // Stretch en sonda üretilir: mevcut vektörlerin rastgele değerleri değişmesin.
     v.extend(stretch(&mut r));
-    // Sprint 2 eklemeleri: aynı gerekçeyle en sonda.
+    // Ek varyantlar da aynı gerekçeyle en sonda.
     v.extend(controls_extra());
     v.extend(fp_probes());
     v.extend(stretch2(&mut r));

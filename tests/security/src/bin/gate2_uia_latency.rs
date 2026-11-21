@@ -1,9 +1,5 @@
-//! UIA çıkarım gecikmesi (R2): süreç içi UIA vs tek atımlık işçi süreç, AYNI üretim kod yolu
-//! (`s_sensor::UiaProbe`). Hedef pencere AYRI bir süreçte (bu ikilinin `--host-window` kipi) açılır,
-//! böylece iki yol da gerçek kullanımdaki gibi süreçler arası UIA yapar. TÜM VERİLER SENTETİKTİR.
-//!
-//! `gate2-uia-latency [--samples N]` → her yol için p50/p95/p99/ortalama (ms) ve işçi el sıkışma
-//! (null HWND: süreç başlatma + COM/UIA kurulumu, UIA ağacı yok) maliyeti.
+//! UIA çıkarım gecikmesi: süreç içi UIA ile tek kullanımlık işçi süreç (aynı `s_sensor::UiaProbe`
+//! yolu), hedef pencere ayrı süreçte. `gate2-uia-latency [--samples N]` → p50/p95/p99 (ms).
 
 #[cfg(windows)]
 #[path = "../synthetic.rs"]

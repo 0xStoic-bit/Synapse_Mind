@@ -1,8 +1,5 @@
-# Gate 2 (RAM dump) altyapisi. Sahibi: redteam-auditor.
-#
-# Bu crate KOK workspace'in uyesi DEGILDIR: kendi `[workspace]` tablosu ve kendi Cargo.lock'u vardir
-# (src-tauri / benchmarks ile ayni desen). s-types / s-guard / s-redteam'e path bagimliligiyla baglanir.
-# Calistirma: `cd tests/security && cargo test` (veya `--manifest-path tests/security/Cargo.toml`).
+# Gate 2 (RAM dökümü) test altyapısı. Kök workspace'in üyesi değildir; kendi Cargo.lock'u vardır.
+# Çalıştırma: `cargo test --manifest-path tests/security/Cargo.toml`.
 [workspace]
 
 [package]
@@ -13,8 +10,7 @@ license = "FSL-1.1-MIT"
 publish = false
 
 [features]
-# `encrypted` modu: s-core `MemoryStore::open_encrypted` (graph-vector-core, Sprint 3 Asama B) mevcutsa
-# `cargo build --features encrypted`. API yoksa hedef bu modlari "SKIPPED" olarak bildirir.
+# `encrypted`: s-core `MemoryStore::open_encrypted` yolunu da sınar.
 encrypted = ["core"]
 # Arena A (tek kullanımlık UIA işçi süreci): `s_sensor::run_uia_worker_if_requested`/`UiaProbe`/`UiaIsolation`
 # ana ağaçta göründüğünde AÇILIR (varsayılana alınacak). Kapalıyken hedef eski süreç-içi UIA ile derlenir.

@@ -1,11 +1,5 @@
-//! Faz 1 metadata-only sensör demosu.
-//!
-//! Kullanım:
-//!   cargo run -p s-sensor --example metadata_demo
-//!   cargo run -p s-sensor --example metadata_demo -- --seconds 5
-//!
-//! Güvenlik: Konsola YALNIZCA metadata (olay türü, pid, zaman, metin uzunluğu) basılır.
-//! Ham pencere başlığı, UIA metni veya pano içeriği asla yazdırılmaz.
+//! Yalnızca metadata basan sensör demosu: `cargo run -p s-sensor --example metadata_demo`.
+//! Ham başlık, UIA metni ya da pano içeriği asla yazdırılmaz.
 
 use std::time::Duration;
 

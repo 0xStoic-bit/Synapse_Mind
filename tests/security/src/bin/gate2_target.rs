@@ -1,29 +1,13 @@
-//! Gate 2 "hedef" süreç: sahte sensör + `s_guard` hattı (+ isteğe bağlı s-core) + bekleme.
+//! Gate 2 hedef süreci: sahte sensör + `s_guard` hattı (+ isteğe bağlı s-core) + bekleme.
 //!
-//! Kullanım: `gate2-target --spec <dosya> --mode <mod> [--close] [--test-key-file <dosya>] [--db-dir <dizin>]`
+//! `gate2-target --spec <dosya> --mode <mod> [--close] [--test-key-file <dosya>] [--db-dir <dizin>]`
 //!
-//! Guard modları (Sprint 2):
-//! * `baseline`   : paketler oluşturulur ve guard'a VERİLMEDEN düşürülür (harness/s-types tabanı).
-//! * `process`    : her paket senkron `s_guard::process` ile işlenir (tokio yok).
-//! * `run`        : paketler `s_guard::run` hattından (tokio mpsc + spawn_blocking) geçer; hat boşta bekler.
-//! * `--close`    : hat bittikten sonra gönderici kapatılır (guard görevi sonlanır).
+//! Modlar: `baseline` (guard yok), `process`, `run`, `core` (+ `MemoryStore`), `dpapi`,
+//! `encrypted` / `encrypted-closed` (`--features encrypted`). Kontrol modları (`leaky-*`, `freed-utf8`)
+//! kasıtlı sızıntı üretir; denetçi yakalamalıdır.
 //!
-//! Sprint 3 modları:
-//! * `core`       : `run` + guard çıktısı `s_core::run_ingestion` ile `MemoryStore::open_in_memory`'e alınır,
-//!   ardından `hybrid_search` birkaç kez çağrılır (maskeli metin RAM'de bulunabilir; HAM sır bulunmamalı).
-//! * `dpapi`      : yalnızca DPAPI yolu: test anahtarı `protect_key` -> `unprotect_key` -> zeroize.
-//! * `encrypted` / `encrypted-closed` : `core` + `MemoryStore::open_encrypted` (geçici `--db-dir`),
-//!   anahtar DPAPI protect/unprotect turundan geçer. `-closed`: boru hattı ve depo kapatılır, SONRA dump
-//!   (SQLCipher anahtar tamponları iş bitince kalıyor mu). `encrypted` modu yalnızca `--features encrypted`
-//!   ile derlenir; aksi halde "SKIPPED" bildirilir.
-//!
-//! Kontrol (kasıtlı sızıntı; denetçi yakalamalı):
-//! * `leaky-utf8` / `leaky-utf16` / `freed-utf8` : ham metin kopyası sızdırılır / zeroize edilmeden serbest bırakılır.
-//! * `leaky-key`  : test anahtarının ham bayt, hex (UTF-8 + UTF-16) ve `x'hex'` kopyaları sızdırılır.
-//!
-//! Anahtar `--test-key-file` ile verilir (komut satırı/ortam PEB'de kalır ve her koşuda sahte bulgu
-//! üretirdi). Hedef sırları kendi üretmez; tarif dosyasından okur, tamponu zeroize eder.
-//! `s-redteam`'e bağlı değildir. Sentetik veri dışında hiçbir şey işlemez.
+//! Anahtar `--test-key-file` ile verilir (komut satırı PEB'de kalırdı). Sırlar tarif dosyasından
+//! okunur. Yalnızca sentetik veri işlenir.
 
 use s_gate2::spec::decode_to_packets;
 use s_guard::Verdict;
@@ -597,11 +581,8 @@ fn main() {
             });
             _keep = Some(Box::new((rt, handle)));
         }
-        // Anahtar ömrü atıfı (src-tauri `keystore` akışının aynısı): ilk çalıştırma = DbKey::generate -> protect ->
-        // blobu `--db-dir/key.bin`e yaz -> open_encrypted(key.expose()) -> key düşer (depo AÇIK kalır).
-        // `keystore-reload`: blob önceden yazılıp `DbKey::load` ile yüklenir. Denetçi blobu çözüp anahtarı arar.
-        // `keystore-gen-protect`: yalnızca DbKey::generate + protect (DB yok); blob `--db-dir/key.bin`e yazılır.
-        // `keystore-load-open`: denetçinin sağladığı blob (`--key-blob`) -> DbKey::load -> open_encrypted -> drop.
+        // Anahtar ömrü modları src-tauri `keystore` akışını taklit eder: üret/yükle → protect →
+        // `key.bin` → open_encrypted → anahtar düşer. Denetçi blobu çözüp anahtarı arar.
         "keystore-gen-protect" => {
             drop(packets);
             let db_dir = db_dir.expect("--db-dir gerekli");

@@ -1,17 +1,13 @@
-//! # s-sensor — Olay Güdümlü Sensörler (Katman 1)
+//! # s-sensor: olay güdümlü sensörler
 //!
-//! Sahibi: `os-sensor-agent`. Çıktı: `RawCapturePacket` →
-//! `tokio::sync::mpsc::channel(s_types::SENSOR_CHANNEL_CAPACITY)`.
+//! Çıktı: `RawCapturePacket`, `mpsc::channel(SENSOR_CHANNEL_CAPACITY)` hattına.
 //!
-//! Kapsam:
-//! - `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` odak değişimi takibi
-//! - Odaktaki pencerede `AccessibilityTreeChanged` metin akışı takibi (debounce + değişim eşiği)
-//! - Windows UI Automation ile odaktaki pencerenin metin düğümleri (`AccessibilityText`)
-//! - `AddClipboardFormatListener` ile pano dinleyicisi ve format sınıflandırması (`ClipboardFormat`)
-//! - Kaynak farkındalıklı kontrolcü (`Active` / `Batching` / `Suspended`)
-//! - `tokio::sync::mpsc::channel(s_types::SENSOR_CHANNEL_CAPACITY)` (128) hattı
+//! - Odak değişimi (`SetWinEventHook`) ve odaktaki pencerenin erişilebilirlik metni
+//!   (UI Automation, debounce ve değişim eşiğiyle).
+//! - Pano dinleyicisi ve biçim sınıflandırması.
+//! - Kaynak farkındalıklı kontrolcü (`Active` / `Batching` / `Suspended`).
 //!
-//! Periyodik ekran görüntüsü YASAK; xcap/pHash fallback henüz eklenmemiştir.
+//! Periyodik ekran görüntüsü alınmaz.
 
 pub mod clipboard;
 pub mod controller;
@@ -195,11 +191,8 @@ impl SensorHandle {
         }
     }
 
-    /// Sensör yakalamasını belirtilen süre boyunca manuel olarak duraklatır (`Suspended`).
-    ///
-    /// Süre dolduğunda veya [`SensorHandle::resume`] çağrıldığında kontrolcü
-    /// donanım/güç sinyallerine göre `Active` veya `Batching` durumuna döner.
-    /// `Duration::ZERO` verilirse varsa aktif manuel duraklatmayı sonlandırır.
+    /// Yakalamayı `duration` boyunca duraklatır. Süre dolunca ya da [`SensorHandle::resume`]
+    /// ile kontrolcü normal duruma döner; `Duration::ZERO` aktif duraklatmayı bitirir.
     pub fn pause_for(&self, duration: Duration) {
         #[cfg(windows)]
         self.inner.pause_for(duration);

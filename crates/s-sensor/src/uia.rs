@@ -930,10 +930,8 @@ pub(crate) mod win32 {
             }
         }
 
-        // 3. Name özelliği (etiketler, düğmeler, başlıklar)
-        // Graft 1: Kök pencerenin (`depth == 0`) başlığı `GetWindowTextW` ile zaten
-        // `Zeroizing<Vec<u16>>` üzerinden `RawCapturePacket.window_title`'a alınır;
-        // işçi içinde de ikinci kopyayı önlemek için `depth == 0` Name çağrısı atlanır.
+        // 3. Name özelliği (etiketler, düğmeler, başlıklar). Kök pencerenin başlığı
+        // zaten `window_title`'a alındığı için ikinci kopya oluşmasın diye atlanır.
         if !got_pattern_text && depth > 0 {
             // SAFETY: `elem` geçerli bir `IUIAutomationElement` COM arayüzüdür.
             if let Ok(bstr) = unsafe { elem.CurrentName() } {

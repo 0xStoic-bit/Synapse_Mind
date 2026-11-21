@@ -1,11 +1,8 @@
-//! s-redteam: Gate 1 / Gate 2 sızma testleri. Sahibi: redteam-auditor.
+//! s-redteam: Gate 1 / Gate 2 sızma testleri.
 //!
-//! * `synth`   : sentetik veri üreteçleri (Luhn kart, TC kimlik, SSN, anahtarlar, kodlayıcılar)
-//! * `vectors` : Gate 1 saldırı vektörleri (`all_vectors()`)
-//! * `harness` : sızıntı dedektörü (`check_block`), guard API'sinden bağımsız
+//! * `synth`: sentetik veri üreteçleri · `vectors`: saldırı vektörleri · `harness`: sızıntı dedektörü.
 //!
-//! Guard'a karşı koşan testler: `tests/gate1_pii.rs` (`s_guard::process` / `s_guard::run`).
-//! TÜM VERİLER SENTETİKTİR; gerçek kimlik bilgisi yoktur.
+//! Guard'a karşı koşan testler `tests/gate1_pii.rs` içindedir. Tüm veriler sentetiktir.
 
 pub mod harness;
 pub mod synth;

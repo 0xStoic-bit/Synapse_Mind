@@ -19,14 +19,16 @@ ui/dist/
 # graphify bilgi grafı: yerel geliştirme aracı, her commit'te yeniden kurulur (git hook), depoya girmez
 graphify-out/
 
-# Üçüncü taraf UI skill'leri (impeccable, ui-ux-pro-max, react-native-skills):
-# lisans dosyası yok; yerelde kullanılır, depoya girmez (orkestratör kararı 20.11.2026)
-.agents/skills/
-
 # Günlükler ve işletim sistemi artıkları
 *.log
 Thumbs.db
 desktop.ini
 
-# Claude Code yerel klasörü (ajan tanımları, skill'ler, ayarlar) depoya girmez
+# Yapay zekâ geliştirme araçlarının yerel dosyaları depoya girmez
 .claude/
+.agents/
+CLAUDE.md
+AGENTS.md
+AGENT_CONTRACTS.md
+RULES_AND_SKILLS.md
+scripts/agy-api.sh

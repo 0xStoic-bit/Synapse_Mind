@@ -1,8 +1,5 @@
-//! UIA işçi süreç yaşam döngüsü izleyicisi: tasarım en çok 1 boşta yedek işçi öngörür. Gerçek uygulama ikilisi
-//! (kopyası, izole `LOCALAPPDATA`) çalıştırılır; sentetik pencere/pano beslenirken `synapse-mind.exe` alt
-//! süreçleri 2 ms aralıkla örneklenir. Çıktı: her işçinin doğuş/ölüm zamanı, ömrü, eşzamanlı sayı zaman çizelgesi,
-//! en yüksek eşzamanlılık ve kapanıştan sonra yetim işçi sayısı. "2 işçi" bir geçiş anı mı (eski ölüyor + yeni
-//! ısınıyor) yoksa sızıntı mı (uzun süre ikisi birden) ayrımı için. TÜM VERİLER SENTETİKTİR.
+//! UIA işçi yaşam döngüsü izleyicisi: sentetik besleme sırasında alt süreçler 2 ms aralıkla
+//! örneklenir; doğuş/ölüm, en yüksek eşzamanlılık ve yetim işçi sayısı raporlanır.
 
 #[cfg(windows)]
 #[path = "../synthetic.rs"]

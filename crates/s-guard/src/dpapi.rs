@@ -1,17 +1,9 @@
-//! Veritabanı anahtarı koruma: 256-bit rastgele anahtar üretimi (OS CSPRNG) ve
-//! Windows DPAPI (`CryptProtectData` / `CryptUnprotectData`) ile kullanıcıya bağlı sarma.
+//! Veritabanı anahtarı: OS CSPRNG ile 256-bit üretim ve Windows DPAPI ile kullanıcıya bağlı
+//! sarma. Dosya I/O yoktur; hata mesajları anahtar ya da blob içermez. DPAPI tamponları
+//! `LocalFree` öncesinde sıfırlanır.
 //!
-//! Dosya I/O bu modülde yoktur; sarılmış blob'u saklamak çağıranın işidir.
-//! Hiçbir hata mesajı anahtar veya blob içeriği taşımaz.
-//! DPAPI'nin döndürdüğü tamponlar `LocalFree` öncesinde sıfırlanır.
-//!
-//! # Anahtar yığında kopyalanmasın
-//!
-//! `Zeroizing<[u8; 32]>` DEĞERLE taşınırsa (fonksiyon dönüşü, `Option`/`Result`
-//! sarmalama) derleyici çağrı çerçevelerinde bayat yığın kopyaları bırakabilir. Bu
-//! yüzden anahtar materyali için tercih sırası: [`DbKey`] (yığında sabit adresli, tek
-//! heap ayırması) > `*_into(&mut [u8; 32])` (çağıranın tamponuna yerinde yazar) >
-//! kullanımdan kaldırılan değer döndüren `generate_db_key` / `unprotect_key`.
+//! Anahtar değerle taşınmamalıdır (bayat yığın kopyaları). Tercih sırası: [`DbKey`] >
+//! `*_into(&mut [u8; 32])` > kullanımdan kaldırılan `generate_db_key` / `unprotect_key`.
 
 use std::fmt;
 use zeroize::Zeroizing;
@@ -86,13 +78,9 @@ pub fn unprotect_key_into(blob: &[u8], out: &mut [u8; 32]) -> Result<()> {
     imp::unprotect_into(blob, out)
 }
 
-/// Heap'te tek kez ayrılan, adresi sabit 256-bit veritabanı anahtarı.
-///
-/// İçerik `Box` ayrıldıktan SONRA yerinde yazılır (OS CSPRNG veya DPAPI tamponundan);
-/// `DbKey` taşınırken yalnızca işaretçi kopyalanır, anahtar baytları değil. Drop'ta
-/// zeroize edilir. Bilinçli olarak `Clone`, `Copy`, `Debug` ve `PartialEq` YOK.
-/// Baytlara yalnızca [`DbKey::expose`] ile ödünç erişilir; `[u8; 32]` değerine
-/// kopyalamayın (örn. `*key.expose()` yığında yeni kopya oluşturur).
+/// Heap'te tek kez ayrılan, adresi sabit 256-bit anahtar. İçerik kutu ayrıldıktan sonra
+/// yerinde yazılır, taşınırken yalnızca işaretçi kopyalanır, Drop'ta sıfırlanır.
+/// Bilinçli olarak `Clone`/`Copy`/`Debug` yok; baytlara [`DbKey::expose`] ile ödünç erişilir.
 pub struct DbKey(Box<Zeroizing<[u8; 32]>>);
 
 impl DbKey {

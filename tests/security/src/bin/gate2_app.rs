@@ -1,26 +1,15 @@
-//! Resmi Gate 2 harness'i: GERÇEK uygulama ikilisi (`synapse-mind.exe`) üzerinde bellek dökümü.
+//! Resmi Gate 2: gerçek uygulama ikilisi (`synapse-mind.exe`) üzerinde bellek dökümü.
 //!
 //! `gate2-app [--exe <yol>] [--skip-search] [--keep-going]`
 //!
-//! PANEL EVRESI OTOMATIKTIR (v0.1.1): Hafıza Paneli, klavye enjeksiyonu (Ctrl+M) yerine uygulamanın test-only
-//! `gate2-hooks` kancasıyla açılır. Bu yüzden `--exe` ile verilen ikili MUTLAKA
-//! `cargo build --manifest-path src-tauri/Cargo.toml --features gate2-hooks` ile derlenmiş olmalıdır (varsayılan yol
-//! `src-tauri/target/debug/synapse-mind.exe`; yayın/`cargo tauri build` ikilisi kancayı İÇERMEZ). Kanca yoksa harness
-//! panel evresini ÇALIŞTIRMAZ ve uygulamayı başlatmadan çıkış kodu 2 ile açıkça bildirir (`--skip-search` yalnız
-//! arama + panel evrelerini birlikte atlar). Kanca: ikinci çağrı `synapse-mind.exe --gate2-open-panel`
-//! (adlı olay `Local\SynapseMind-Gate2-OpenPanel`).
+//! İkili `--features gate2-hooks` ile derlenmiş olmalıdır (Hafıza Paneli kancayla açılır);
+//! kanca yoksa çıkış kodu 2.
 //!
-//! Akış: (1) uygulama izole `LOCALAPPDATA` ile başlatılır (kullanıcının gerçek Synapse Mind verisine DOKUNULMAZ),
-//! (2) gerçek sensör yoluyla SENTETİK sırlar beslenir: sentetik bir üst düzey pencere (başlık + UIA ile okunan
-//! çok satırlı metin) ve üç sentetik pano içeriği, (3) boşta DÖKÜM (uygulama + tüm WebView2 alt süreçleri),
-//! (4) Alt+Space + yazılan sentetik arama (WebView içeriği için pozitif kontrol işareti) sonrası ikinci DÖKÜM,
-//! (5) her döküm: HAM sırlar + DbKey (ham/hex/UTF-16/`x'hex'`) + SQLCipher türetilmiş HMAC anahtarı aranır,
-//! (6) canlılık: uygulama kapatıldıktan sonra şifreli DB gerçek anahtarla açılıp olayların maskeli geldiği ve ham
-//! sırrın bulunmadığı doğrulanır (aksi halde "0 bulgu" anlamsız olabilirdi).
-//! Pozitif kontroller: denetçinin kendi süreci (ham sırlar bellekte) ve WebView'e yazılan işaret.
+//! Akış: izole `LOCALAPPDATA` ile başlat → sentetik pencere ve pano sırları besle → boşta döküm →
+//! Alt+Space ile sentetik arama → döküm → panel açık döküm. Her dökümde ham sırlar, DbKey ve
+//! SQLCipher HMAC anahtarı aranır. Sonunda şifreli DB açılıp olayların maskeli olduğu doğrulanır.
 //!
-//! Çıkış: 0 = PASS; 1 = bulgu (VETO); 2 = kontrol/canlılık başarısız (sonuç GÜVENİLMEZ).
-//! TÜM VERİLER SENTETİKTİR. Pano ve odak etkilenir (iş bitince pano temizlenir).
+//! Çıkış: 0 = PASS; 1 = bulgu (VETO); 2 = kontrol başarısız (sonuç güvenilmez). Veriler sentetiktir.
 
 #[cfg(windows)]
 #[path = "../common.rs"]
@@ -84,7 +73,7 @@ fn main() {
 
     // ---- uygulamayı izole veri dizini ile başlat
     let data_root = TempDir::new("app").expect("temp dir");
-    // Özgün ikili KİLİTLENMESİN (başka ajan release derleyebilsin): kopyası çalıştırılır.
+    // Özgün ikili kilitlenmesin diye kopyası çalıştırılır.
     let run_exe = data_root.path().join("bin").join("synapse-mind.exe");
     std::fs::create_dir_all(run_exe.parent().unwrap()).expect("bin dizini");
     std::fs::copy(&exe, &run_exe).expect("ikili kopyalanamadi");
@@ -405,11 +394,8 @@ fn main() {
     stage!("pencere-kapali");
 
     if !skip_search {
-        // Girdi YALNIZCA ön plan overlay'e aitse enjekte edilir (aksi halde kullanıcının başka uygulamasına yazılırdı).
-        // Kök neden (v0.1.1): eski adım tek Alt+Space + 2 sn uyku + yalnız ön plan yoklamasıydı; overlay görünür değilse
-        // (kısayol gecikti/yutuldu) `activate_window_titled` pencere bulamıyor ve Alt+Space bir daha basılmıyordu.
-        // Şimdi: görünürlük beklenir, gizliyse Alt+Space yeniden basılır, görünür-ama-arkadaysa odak zorlanır; her
-        // denemenin ön plan süreci/başlığı loglanır. Doğrulanmadıkça işaret yazılmaz.
+        // Girdi yalnızca ön plan overlay'e aitse enjekte edilir. Görünürlük beklenir, gizliyse
+        // Alt+Space yeniden basılır; doğrulanmadıkça işaret yazılmaz.
         let mut fg_ok = s_gate2::winutil::ensure_overlay_foreground(
             &mut || process_tree(root_pid).iter().map(|p| p.pid).collect(),
             "Synapse Mind",
@@ -638,9 +624,8 @@ fn main() {
     );
 }
 
-/// `gate2-hooks` kancasının ikilide bulunup bulunmadığı: adlı olay (belirleyici) ve `--gate2-open-panel`
-/// bayrağı (bilgi amaçlı) ASCII/UTF-16LE. Yayın ikilisinde ikisi de bulunmaz (overlay-ui-dev doğrulaması);
-/// olay adı yoksa panel evresi çalıştırılmaz.
+/// Kancanın ikilide olup olmadığı: adlı olay (belirleyici) ve `--gate2-open-panel` bayrağı (bilgi).
+/// Olay adı yoksa panel evresi çalıştırılmaz.
 #[cfg(windows)]
 struct HookProbe {
     flag: bool,
@@ -649,11 +634,8 @@ struct HookProbe {
 
 #[cfg(windows)]
 impl HookProbe {
-    /// Adlı olay dizesi kancanın kesin işaretidir. 18 baytlık bayrak dizesi optimize yayın
-    /// derlemesinde karşılaştırma için anlık değerlere (immediate) gömülebildiğinden ikilide düz
-    /// metin olarak bulunmayabilir (v0.1.1 doğrulaması, 21.11.2026); bu yüzden tek başına
-    /// belirleyici değildir. Kancanın gerçekten çalıştığı, panel penceresinin açılmasıyla ayrıca
-    /// doğrulanır (`panel_window_ok`).
+    /// Olay adı kancanın kesin işaretidir; bayrak dizesi optimize derlemede anlık değerlere
+    /// gömülebildiği için düz metin bulunmayabilir. Kancanın çalıştığı panelin açılmasıyla doğrulanır.
     fn present(&self) -> bool {
         self.event
     }

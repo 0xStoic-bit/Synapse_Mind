@@ -1,8 +1,5 @@
-//! DPAPI-protected database key lifecycle (`%LOCALAPPDATA%\SynapseMind\key.bin`).
-//!
-//! Plaintext key material exists strictly inside `s_guard::DbKey` (heap-pinned
-//! `Box<Zeroizing<[u8; 32]>>`, zeroized on drop) and is never copied by value,
-//! logged, serialized, or written unencrypted to disk.
+//! DPAPI-protected database key (`key.bin`). Plaintext key bytes live only inside
+//! `s_guard::DbKey`; never copied by value, logged or written unencrypted.
 
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -38,11 +35,8 @@ pub fn resolve_data_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// Loads the DPAPI-wrapped 256-bit database key from `key_path` into a heap-pinned
-/// `DbKey`, or generates, wraps, and persists a fresh key blob if `key_path` does
-/// not exist yet.
-///
-/// Corrupted or unreadable key files fail loudly without overwriting the blob.
+/// Loads the DPAPI-wrapped key from `key_path`, or generates and persists a new one.
+/// Corrupted or unreadable key files fail without overwriting the blob.
 pub fn load_or_create_db_key(key_path: &Path) -> Result<DbKey, String> {
     match std::fs::read(key_path) {
         Ok(blob) => {

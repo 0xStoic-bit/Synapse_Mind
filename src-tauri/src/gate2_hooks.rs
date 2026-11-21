@@ -1,8 +1,5 @@
-//! Gate 2 test-only hooks (`--features gate2-hooks`, OFF by default).
-//!
-//! Allows the `gate2-app` test harness to open the Memory Panel deterministically
-//! via `--gate2-open-panel` without relying on fragile synthetic `Ctrl+M` keyboard
-//! injection. Never compiled into release builds.
+//! Gate 2 test kancaları (`--features gate2-hooks`, varsayılan kapalı, yayında yok): panel açma,
+//! kaydı duraklatma ve boşta süresi ayarı.
 
 /// CLI flag checked in `gate2-hooks` builds to open the Memory Panel.
 pub const CLI_OPEN_PANEL_FLAG: &str = "--gate2-open-panel";

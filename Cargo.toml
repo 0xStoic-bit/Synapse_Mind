@@ -7,7 +7,7 @@ members = [
     "crates/s-core",
     "tests/redteam",
 ]
-# src-tauri Faz 4'te overlay-ui-dev tarafından eklenecek.
+# src-tauri, benchmarks ve tests/security kendi workspace'leridir.
 
 [workspace.package]
 version = "0.1.1"

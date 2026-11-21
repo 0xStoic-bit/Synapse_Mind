@@ -260,11 +260,8 @@ pub fn step_controller_state(
     }
 }
 
-/// Saf durum makinesi adımı + kullanıcı kaynaklı manuel duraklatma (`pause_for`) önceliği.
-///
-/// Manuel duraklatma aktifken (`manual_paused == true`) efektif durum her zaman
-/// `ControllerState::Suspended` olur ve `should_flush_batch` `false` döner; alttaki
-/// GPU histerezisi ise sinyallerle güncellenmeye devam eder.
+/// Saf durum makinesi adımı. Manuel duraklatma (`pause_for`) aktifken durum her zaman
+/// `Suspended` olur; GPU histerezisi sinyallerle güncellenmeye devam eder.
 pub fn step_controller_state_with_pause(
     machine: ControllerMachineState,
     signals: ResourceSignals,

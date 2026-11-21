@@ -1,15 +1,10 @@
-//! Win32 olay kancaları (`SetWinEventHook`) ve pano dinleyici mesaj pompası.
+//! Win32 olay kancaları ve pano dinleyici mesaj pompası.
 //!
-//! Mimari:
-//! - İş parçacığı 1 (`s-sensor-win32-pump`): Gizli mesaj penceresi (`HWND_MESSAGE`),
-//!   `AddClipboardFormatListener` ve `SetWinEventHook` (odak değişimi + odaktaki pencere
-//!   erişilebilirlik metin/ağaç olayları) kurar; `GetMessageW` döngüsünden hafif sinyalleri
-//!   sınırlı kuyruğa (`try_send`) iletir.
-//! - İş parçacığı 2 (`s-sensor-uia-worker`): UI Automation çıkarımını yönetir (varsayılan:
-//!   önceden ısıtılmış tek kullanımlık işçi SÜREÇTE, bkz. `crate::uia_worker`; `InProcess`:
-//!   COM MTA burada), odak yerleşme (250 ms) ve soğuma (2 s) uygular, pano verisini okur,
-//!   `AccessibilityTreeChanged` için debounce + metin değişim eşiğini uygular ve
-//!   `RawCapturePacket` nesnelerini kopyalamadan `tokio::sync::mpsc` hattına gönderir.
+//! - `s-sensor-win32-pump`: gizli mesaj penceresi, pano dinleyicisi ve `SetWinEventHook`;
+//!   sinyalleri sınırlı kuyruğa iletir.
+//! - `s-sensor-uia-worker`: UIA okumasını yönetir (varsayılan: işçi süreç, bkz.
+//!   `crate::uia_worker`), odak yerleşme (250 ms) ve soğuma (2 s) uygular, paketleri
+//!   kopyalamadan `mpsc` hattına gönderir.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

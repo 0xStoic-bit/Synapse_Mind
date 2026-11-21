@@ -1,9 +1,5 @@
-//! Gate 2 atıf (attribution) koşuları: gerçek uygulamadaki ham sır / anahtar kalıntısının KAYNAĞINI ayırır.
-//!
-//! `gate2-target` sensör modlarını (yalnızca `s-sensor`; `s-sensor` + `s-guard`) ve anahtar-ömrü modlarını
-//! (`keystore-first-run`, `keystore-reload`: src-tauri `keystore` akışının birebir kopyası) çalıştırır; sentetik
-//! pencere/pano besleme ve döküm/tarama `gate2-app` ile aynıdır. Yalnızca APP_OWNED (özel yığın/yığıt) bulgular
-//! kaynak sayılır; `mapped/image` OS paylaşımlı bölümlerdir. TÜM VERİLER SENTETİKTİR.
+//! Gate 2 atıf koşuları: bellek kalıntısının kaynağını (sensör, guard, anahtar ömrü) ayırır.
+//! Yalnızca uygulamaya ait (APP_OWNED) bulgular sayılır. Veriler sentetiktir.
 
 #[cfg(windows)]
 #[path = "../common.rs"]

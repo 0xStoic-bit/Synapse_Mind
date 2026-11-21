@@ -11,13 +11,12 @@ use s_redteam::vectors::{PayloadKind, Tier, all_vectors};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-/// Gate 1 vektörlerinden (Core + Evasion + Blacklist + Control + Stretch; yalnızca `accepted-*` ve FP sondaları hariç) tarifler ve aranacak sırlar.
+/// Gate 1 vektörlerinden (kabul edilenler ve yanlış pozitif sondaları hariç) tarifler ve aranacak sırlar.
 pub fn fixture() -> (Vec<PacketSpec>, Vec<Secret>) {
     fixture_impl(false)
 }
 
-/// `fixture()` + guard'ın TAM maskelediği Stretch vektörleri (typeparse, iç içe/UTF-16 base64, çok satırlı kuyruk,
-/// diceware...): guard'ın yeni kod yollarını bellek açısından da zorlar (`gate2-audit --wide`).
+/// `fixture()` + guard'ın tam maskelediği ileri kaçırma vektörleri (`gate2-audit --wide`).
 pub fn fixture_wide() -> (Vec<PacketSpec>, Vec<Secret>) {
     fixture_impl(true)
 }
@@ -38,8 +37,7 @@ fn fixture_impl(wide: bool) -> (Vec<PacketSpec>, Vec<Secret>) {
         if v.tier == Tier::Stretch && !wide {
             continue;
         }
-        // Stretch vektörleri yalnızca guard onları TAM maskeliyorsa (sızıntı yoksa) fixture'a girer; çıktıda
-        // zaten görünen (kabul edilen/açık) bir "sır" bellekte bulunursa bu bir bellek sızıntısı değildir.
+        // Yalnızca guard'ın tam maskelediği vektörler alınır; çıktıda zaten görünen bir değer sızıntı değildir.
         if v.tier == Tier::Stretch {
             let leaks = match s_guard::process(v.to_packet(1), 0) {
                 s_guard::Verdict::Masked(b) => !s_redteam::harness::check_block(&v, &b).is_empty(),

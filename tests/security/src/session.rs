@@ -108,12 +108,8 @@ pub fn run_session(
     run_session_with_key(target_exe, mode, specs, secrets, extra_args, None)
 }
 
-/// `run_session` + deterministik test anahtarı (64 hex karakter). Anahtar komut satırı/ortam
-/// değişkeniyle GEÇİRİLMEZ (PEB'de UTF-16 olarak süreç boyunca kalır ve her koşuda sahte bulgu
-/// üretirdi); geçici bir dosyayla (`--test-key-file`) verilir, hedef okur ve zeroize eder, denetçi
-/// READY sonrası ve döküm öncesinde dosyayı siler.
-///
-/// Hedef modu bu derlemede desteklemiyorsa (`SKIPPED ...` satırı) `ErrorKind::Unsupported` döner.
+/// `run_session` + deterministik test anahtarı. Anahtar komut satırıyla geçirilmez (PEB'de kalır),
+/// geçici dosyayla verilir ve döküm öncesinde silinir. Desteklenmeyen modda `Unsupported` döner.
 pub fn run_session_with_key(
     target_exe: &Path,
     mode: &str,

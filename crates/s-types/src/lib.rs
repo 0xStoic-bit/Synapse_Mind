@@ -1,7 +1,4 @@
-//! # s-types — Kilitli Tip ve Veri Devir Sözleşmesi (v0.2-ContractSpec)
-//!
-//! Sahibi: `s-architect`. Faz 0'da dondurulur; değişiklik yalnızca
-//! `s-orchestrator` onayı ve `.agents/BOARD.md` kaydıyla yapılır.
+//! # s-types: sensör, guard ve arama katmanları arasındaki veri tipleri
 //!
 //! Derleme zamanı güvencesi: `RawCapturePacket` loglanamaz.
 //!
@@ -57,26 +54,16 @@
 //! drop(packet); // process_name, window_title ve yük burada zeroize edilir.
 //! ```
 //!
-//! ## Kalan (tip seviyesinde kapatılamayan) sızıntı yolları
-//! Tüketiciler (`s-sensor`, `s-guard`) için bağlayıcı kurallar:
-//! 1. Ham `String`/`Vec` alanlarını `.clone()`, `.to_string()`, `.to_owned()`,
-//!    `std::mem::take`/`replace` ile kopyalamayın. Ara kopya kaçınılmazsa
-//!    `zeroize::Zeroizing<String>` içine sarın.
-//! 2. Ham `String`/`Vec`'i paketlemeden önce `push` ile büyütmeyin; her
-//!    yeniden tahsis (realloc) eski tamponu sıfırlanmadan serbest bırakır.
-//!    Kapasiteyi önceden ayırın (`with_capacity`) veya tek seferde oluşturun.
-//! 3. `EventKind`, `ClipboardFormat`, `timestamp_ms`, `process_id`,
-//!    `ScreenFrame { width, height }` metadata'dır (içerik değildir);
-//!    `EventKind` drop'ta zeroize edilmez, loglanabilir.
+//! ## Tip sisteminin kapatamadığı sızıntı yolları
+//! 1. Ham `String`/`Vec` alanlarını kopyalamayın (`clone`, `to_owned`, `mem::take`);
+//!    kaçınılmazsa `zeroize::Zeroizing` kullanın.
+//! 2. Ham tamponları `push` ile büyütmeyin: yeniden tahsis eski tamponu sıfırlamadan bırakır.
+//! 3. `EventKind`, `ClipboardFormat`, `timestamp_ms`, `process_id` metadata'dır, loglanabilir.
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// 1. SENSÖR ÇIKTISI (os-sensor-agent üretir)
-///
-/// GÜVENLİK KRİTERİ: Debug, Serialize ve Clone türetilemez!
-/// Asla doğrudan loglanamaz, diske yazılamaz veya kopyalanamaz.
-/// Drop anında tüm alanlar (`process_name` ve `window_title` dahil)
-/// zeroize edilir.
+/// Sensörün ham çıktısı. `Debug`, `Serialize` ve `Clone` yoktur; loglanamaz, diske
+/// yazılamaz, kopyalanamaz. Drop anında tüm alanlar sıfırlanır.
 pub struct RawCapturePacket {
     pub timestamp_ms: u64,
     pub process_id: u32,
@@ -168,9 +155,7 @@ impl Drop for RawCapturePacket {
 
 impl ZeroizeOnDrop for RawCapturePacket {}
 
-/// 2. GÜVENLİK KAPISI ÇIKTISI (zero-trust-guard üretir)
-///
-/// Yalnızca PII & Secret Scrubber ve Kara Liste onayından geçen verilerdir.
+/// Guard'dan (maskeleyici ve kara liste) geçmiş, diske yazılabilir olay.
 #[derive(Debug, Clone)]
 pub struct MaskedMemoryBlock {
     pub event_id: u64,
@@ -250,7 +235,7 @@ pub struct AppContext {
     pub is_browser: bool,
 }
 
-/// 3. SORGULAMA ÇIKTISI (graph-vector-core üretir, Tauri UI tüketir)
+/// Arama sonucu: bir olay ve ona bağlı nedensellik zinciri.
 #[derive(Debug, Clone)]
 pub struct CausalityQueryHit {
     pub event_id: u64,
@@ -270,15 +255,11 @@ pub struct CausalityEdge {
     pub time_delta_seconds: u32,
 }
 
-/// Sensör → Muhafız kuyruğunun sabit kapasitesi (Iron Rule 5).
+/// Sensör → guard kuyruğunun sabit kapasitesi.
 pub const SENSOR_CHANNEL_CAPACITY: usize = 128;
 
-// Not: Drop sonrası serbest bırakılmış belleği okumak `unsafe` ve tanımsız
-// davranış (UB) gerektirir; bu yüzden testler drop'un kendisini değil, Drop'un
-// tek satırda çağırdığı `Zeroize` uygulamasını doğrular. Kapasitenin korunması,
-// silmenin yeni tahsis yapılmadan aynı tampon üzerinde (yerinde) yapıldığını
-// gösterir; tamponun baytlarının sıfır olduğunu doğrudan okumak yine `unsafe`
-// gerektirdiğinden zeroize crate'inin kendi garantisine (volatile yazma) dayanılır.
+// Drop sonrası belleği okumak UB olduğundan testler, Drop'un çağırdığı `Zeroize`
+// uygulamasını doğrular; baytların sıfırlanması zeroize crate'inin garantisidir.
 #[cfg(test)]
 mod tests {
     use super::*;

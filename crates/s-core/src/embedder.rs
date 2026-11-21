@@ -31,14 +31,9 @@ pub const DEFAULT_QUERY_MAX_TOKENS: usize = 64;
 /// Maximum WordPiece sequence length for batch indexing (`DualEmbedder` batch session & `FastEmbedder`).
 pub const DEFAULT_BATCH_MAX_TOKENS: usize = 512;
 
-/// Maximum number of texts sent to ONNX Runtime in one inference call by
-/// `FastEmbedder::embed_batch`. Larger inputs are split into sequential sub-batches.
-///
-/// Attention activations grow with `batch * heads * seq_len^2` and every text in a call is
-/// padded to the longest one. Measured peak working set for 128 texts at the 512-token
-/// window (single FP32 session, CPU arena off, 21.11.2026): one call 3,351 MB / 20.3 s;
-/// sub-batch 8: 417 MB / 11.7 s; 4: 299 MB / 9.9 s; 2: 238 MB / 12.6 s; 1: 209 MB / 13.4 s.
-/// `1` keeps background re-embedding at the model-loaded footprint (~200 MB budget).
+/// Texts per ONNX Runtime call in `FastEmbedder::embed_batch`. Attention memory grows with
+/// `batch * seq_len^2` and every text is padded to the longest one: 128 texts at 512 tokens
+/// peaked at 3,351 MB in one call versus 209 MB one at a time (see CHANGELOG 0.1.1).
 pub const EMBED_SUB_BATCH_SIZE: usize = 1;
 
 /// Default inactivity duration (`10 minutes`) used when idle session unloading is enabled
@@ -50,13 +45,9 @@ pub type StatusListenerId = u64;
 
 type StatusCallback = Arc<dyn Fn(&EmbedderStatus) + Send + Sync>;
 
-/// Resolves a user-scoped cache directory outside the repository for downloaded ONNX models.
-///
-/// Honors a non-empty `FASTEMBED_CACHE_DIR` override; otherwise places model files under
-/// `%LOCALAPPDATA%\SynapseMind\fastembed_cache` on Windows (next to the encrypted database, so the
-/// uninstaller's "delete my data" option also removes the model), `$XDG_CACHE_HOME/synapse-mind/fastembed_cache`
-/// or `$HOME/.cache/synapse-mind/fastembed_cache` on Unix, and `std::env::temp_dir()/synapse-mind/fastembed_cache`
-/// as a last resort. (`fastembed` itself also honors `HF_HOME` if set.)
+/// User-scoped model cache outside the repository: `FASTEMBED_CACHE_DIR` if set, else
+/// `%LOCALAPPDATA%\SynapseMind\fastembed_cache` on Windows (removed with user data on
+/// uninstall), the XDG/HOME cache on Unix, or the temp dir as a last resort.
 pub fn default_model_cache_dir() -> PathBuf {
     default_model_cache_dir_from(
         std::env::var_os("FASTEMBED_CACHE_DIR"),
@@ -123,13 +114,8 @@ pub trait Embedder: Send + Sync {
         EMBEDDING_DIM
     }
 
-    /// Stable identifier of the embedding model / vector space produced by [`Self::embed_batch`].
-    ///
-    /// Persistent [`MemoryStore`](crate::MemoryStore) instances record this identifier in the
-    /// encrypted `store_meta` table and invalidate stale `vec0` embeddings for re-indexing
-    /// whenever the active identifier changes. Implementors outside `s-core` (such as
-    /// `DevHashEmbedder`) should override this with a distinct stable identifier (for example
-    /// [`MODEL_ID_DEVHASH`]). Stateful wrappers that are not yet ready return `""`.
+    /// Stable id of the vector space produced by [`Self::embed_batch`]. The store saves it in
+    /// `store_meta` and re-embeds when it changes. Not-ready wrappers return `""`.
     fn model_id(&self) -> &str {
         MODEL_ID_DEFAULT_CUSTOM
     }

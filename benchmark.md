@@ -1,6 +1,6 @@
 # Benchmark Günlüğü
 
-Sahibi: `benchmark-plotter`. Kural: yalnızca gerçek profilleme çıktısı (`.agents/rules/no_mock_data.md`, `.agents/rules/optimization_and_latency_tracking.md`).  
+Kural: yalnızca gerçek ölçüm çıktısı; uydurma ya da tahmini değer yok.  
 Not: `.gitignore` içinde `benchmarks/*` dışlandığından ham ölçüm dosyaları yerel `benchmarks/results/<tarih>/` altında tutulur; kalıcı özet kayıt bu dosyadır.
 
 ---
@@ -33,7 +33,7 @@ Not: `.gitignore` içinde `benchmarks/*` dışlandığından ham ölçüm dosyal
 
 ### 1. Tekil Sorgu Gömme FP32 — Uzunluk & Türkçe Eğrisi (`DualEmbedder::embed_one`, `DEFAULT_QUERY_MAX_TOKENS = 64`)
 
-Hedef SLA (`AGENT_CONTRACTS.md`): **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb_guarded` çağrıda `s_core::truncate_query_prefix(q, DEFAULT_MAX_VECTOR_QUERY_BYTES)` [`200 B`] uygulayarak zamanlar; diğer satırlar doğrudan `embed_one(q)` ölçümüdür.)
+Hedef SLA: **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb_guarded` çağrıda `s_core::truncate_query_prefix(q, DEFAULT_MAX_VECTOR_QUERY_BYTES)` [`200 B`] uygulayarak zamanlar; diğer satırlar doğrudan `embed_one(q)` ölçümüdür.)
 
 | Senaryo | Ort. Girdi (B / char) | Isınma | Örnek | p50 (ms) | p95 (ms) | p99 (ms) | Min (ms) | Maks (ms) | Ort. (ms) | SLA (`p95 < 20 ms`) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -193,8 +193,8 @@ Hedef SLA (`AGENT_CONTRACTS.md`): **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb
 | **WebView2 Alt Toplamı (Hafıza Paneli)** | Hafıza Paneli açık | **7** | – | **602.69** | **371.14** |
 
 ### Metodoloji ve Sınırlar (Sprint 4b)
-- Flamegraph profillemesi yapılmadığından herhangi bir darboğaz veya optimizasyon yorumu eklenmemiştir (`.agents/rules/optimization_and_latency_tracking.md`).
-- Tüm değerler gerçek komut çıktılarından alınmıştır (`.agents/rules/no_mock_data.md`).
+- Flamegraph profillemesi yapılmadığından herhangi bir darboğaz veya optimizasyon yorumu eklenmemiştir.
+- Tüm değerler gerçek komut çıktılarından alınmıştır.
 
 ---
 
@@ -366,8 +366,8 @@ Hedef SLA (`AGENT_CONTRACTS.md`): **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb
 | **WebView2 Alt Toplamı (`20` arama)** | `20` arama sonrası | **6** | – | **355.27** | **172.96** |
 
 ### Metodoloji ve Sınırlar (Sprint 4)
-- Bu koşuda flamegraph profillemesi yapılmadığından herhangi bir darboğaz iddiası veya `unsafe`/C optimizasyon önerisi eklenmemiştir (`.agents/rules/optimization_and_latency_tracking.md`).
-- Tüm değerler gerçek komut çıktılarından alınmıştır (`.agents/rules/no_mock_data.md`).
+- Bu koşuda flamegraph profillemesi yapılmadığından herhangi bir darboğaz iddiası veya `unsafe`/C optimizasyon önerisi eklenmemiştir.
+- Tüm değerler gerçek komut çıktılarından alınmıştır.
 
 ---
 
@@ -466,7 +466,7 @@ Hedef SLA (`AGENT_CONTRACTS.md`): **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb
 - **Bellek Hedefi (`< 50 MB`):** Rust host sürecinin özel belleği (`13.16 MB`, Working Set `35.02 MB`) `50 MB` altındadır; ancak WebView2 alt süreçleri dahil edildiğinde toplam bellek (`410.22 MB` Working Set, `197.57 MB` Private) `< 50 MB` hedefinin üzerindedir.
 
 ### Metodoloji ve Sınırlar (Sprint 3)
-- Flamegraph profillemesi yapılmadığından (`wpr.exe` yükseltilmemiş oturumda `0xc5585011` hatası vermiş, `VSDiagnostics.exe` durdurmada yanıt vermemiş ve `cargo-flamegraph`/`samply`/`cdb` kurulu değildir) herhangi bir darboğaz veya optimizasyon çıkarımı yapılmamıştır (`.agents/rules/optimization_and_latency_tracking.md`).
+- Flamegraph profillemesi yapılmadığından (`wpr.exe` yükseltilmemiş oturumda `0xc5585011` hatası vermiş, `VSDiagnostics.exe` durdurmada yanıt vermemiş ve `cargo-flamegraph`/`samply`/`cdb` kurulu değildir) herhangi bir darboğaz veya optimizasyon çıkarımı yapılmamıştır.
 
 ---
 
@@ -542,5 +542,5 @@ SQLite FTS5 + `sqlite-vec` (`vec0`, 384 boyutlu kosinüs) + nedensellik zinciri 
 | `fastembed_embed_batch_16x200b` | 16 × ≈200 B (toplam batch) | 3 | 30 | 135.89 | 152.19 | 170.32 | 127.73 | 170.32 | 138.81 |
 
 ### Metodoloji ve Sınırlar
-- Bu koşuda flamegraph profillemesi yapılmadığından herhangi bir darboğaz iddiası veya optimizasyon çıkarımı yapılmamıştır (`.agents/rules/optimization_and_latency_tracking.md`).
+- Bu koşuda flamegraph profillemesi yapılmadığından herhangi bir darboğaz iddiası veya optimizasyon çıkarımı yapılmamıştır.
 - `hybrid_search` ölçümlerinde gerçek ONNX gömme süresi ayrıştırılmıştır; uçtan uca gerçek zamanlı sorgu gecikmesi için `fastembed_embed_one_short_200b` (`p50 = 18.06 ms`) + `hybrid_search` (`p50 = 13.51 ms` @ 10k vektörlü) birlikte değerlendirilmelidir.

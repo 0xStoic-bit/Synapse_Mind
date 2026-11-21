@@ -1,8 +1,5 @@
-//! Gate 2 altyapısı testleri: kontrol (kör dedektör değil), düzen ayrıştırma, temizlik ve ÖN ÖLÇÜM.
-//!
-//! Her test gerçek bir `gate2-target` çocuk süreci başlatır, `MiniDumpWriteDump` ile tam dökümünü alır
-//! ve tarar. Döküm/tarif dosyaları iş bitince silinir. TÜM VERİLER SENTETİKTİR.
-//! `gate2_prelim_*` testleri RESMİ Gate 2 DEĞİLDİR (resmi koşu Faz 4 sonunda nihai synapse-mind.exe üzerinde).
+//! Gate 2 altyapı testleri: kontrol, düzen ayrıştırma, temizlik ve ön ölçüm. Her test gerçek bir
+//! `gate2-target` sürecinin tam dökümünü alıp tarar. Resmi Gate 2 `gate2-app` ile koşar.
 
 #![cfg(windows)]
 
@@ -174,7 +171,7 @@ fn gate2_prelim_run_pipeline_has_no_raw_secrets() {
     );
 }
 
-// ------------------------------------------------------------ Sprint 3: anahtar materyali
+// ------------------------------------------------------------ anahtar materyali
 
 use s_gate2::scan::Part;
 use s_gate2::session::run_session_with_key;
@@ -301,10 +298,10 @@ mod encrypted_modes {
     }
 }
 
-// ------------------------------------------------------------ geniş fixture (Stretch dahil)
+// ------------------------------------------------------------ geniş fixture
 
-/// Guard'ın TAM maskelediği Stretch vektörleriyle (yeni R2/R3 kod yolları) bellek ölçümü. Bilinen açık bulgu
-/// (R4b: iç içe/UTF-16 base64 blob'unun 12 karakterlik kuyruğu serbest yığında kalıyor) giderilene kadar `#[ignore]`.
+/// Guard'ın tam maskelediği ileri kaçırma vektörleriyle bellek ölçümü. Bilinen açık bulgu
+/// (iç içe base64 kuyruğu serbest yığında) giderilene kadar `#[ignore]`.
 #[test]
 #[ignore = "R4b: genis fixture'da ic ice/UTF-16 base64 kuyruk kalintisi; --ignored ile kos"]
 fn gate2_wide_process_mode_has_no_raw_secrets() {

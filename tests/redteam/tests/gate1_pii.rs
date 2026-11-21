@@ -1,13 +1,6 @@
-//! Gate 1: PII / Secret sızma testi (`s_guard::process` ve `s_guard::run` karşısında).
+//! Gate 1: PII / sır sızma testi (`s_guard::process` ve `s_guard::run` karşısında).
 //!
-//! Sabit arayüz (BOARD.md): `process(packet, event_id) -> Verdict`,
-//! `Verdict::{Dropped(DropReason), Masked(MaskedMemoryBlock)}`.
-//!
-//! NOT: guard bu API'yi henüz dışa açmadıysa bu dosya yalnızca eksik `s_guard::process` /
-//! `Verdict` / `DropReason` / `run` yüzünden derlenmez; vektör/harness testleri için
-//! `cargo test -p s-redteam --lib` koşar.
-//!
-//! Rapor için: `cargo test -p s-redteam --test gate1_pii -- --nocapture`.
+//! Rapor: `cargo test -p s-redteam --test gate1_pii -- --nocapture`.
 //! Daha sıkı pencere: `REDTEAM_MIN_WINDOW=4`.
 
 use s_guard::{DropReason, Verdict, process};
@@ -233,14 +226,9 @@ fn gate1_mask_format_conformance() {
     );
 }
 
-/// Asenkron hat (`run`): aynı vektörler mpsc üzerinden.
-///
-/// Eşleştirme: `run` her paket için (DROP dahil) `event_id`'yi 0'dan artırır, yani
-/// `block.event_id` == gönderim sırası. Her blok (1) kendi vektörünün iğnelerine karşı tam
-/// pencereyle, (2) senkron `process()` çıktısıyla birebir eşitlik için, (3) diğer vektörlerin
-/// iğnelerine karşı 12 karakterlik pencereyle (çapraz-bulaşma; "github"/"stripe" gibi herkese
-/// açık etiket sözcükleri 12 karakteri aşamaz, gerçek sır gövdesi aşar) denetlenir.
-/// Hiçbir sır gövdesi penceresi hariç tutulmaz.
+/// Asenkron hat (`run`): aynı vektörler mpsc üzerinden. `event_id` gönderim sırasıdır.
+/// Her blok kendi sırlarına karşı tam pencereyle, senkron `process()` çıktısıyla eşitlik için
+/// ve diğer vektörlerin sırlarına karşı 12 karakterlik pencereyle (çapraz bulaşma) denetlenir.
 #[tokio::test]
 async fn gate1_async_pipeline_no_leak() {
     let vectors = all_vectors();
@@ -473,29 +461,28 @@ fn gate1_window4_every_hit_is_classified_benign() {
     );
 }
 
-/// Stretch (bilinen sınırlama / ileri kaçırma) vektörleri: yalnızca RAPOR (asla başarısız olmaz).
+/// İleri kaçırma (bilinen sınırlama) vektörleri: yalnızca rapor, testi başarısız etmez.
 #[test]
 fn gate1_stretch_report() {
     let s = audit_by(|v| v.id.starts_with("stretch-"));
     report("stretch (informational)", &s);
 }
 
-/// Stretch vektörlerini katı doğrular. Bilinen sınırlamalar kapanana kadar `#[ignore]`;
-/// `cargo test -p s-redteam --test gate1_pii -- --ignored` ile koşar.
+/// İleri kaçırma vektörlerini katı doğrular (`--ignored`).
 #[test]
 #[ignore = "bilinen sinirlamalar (stretch); --ignored ile kos"]
 fn gate1_stretch_vectors_leave_no_residue() {
     assert_no_leaks("stretch", &audit_by(|v| v.id.starts_with("stretch-")));
 }
 
-/// Sprint 2 ek stretch (guard'ın yeni sezgilerini zorlayan varyantlar): yalnızca RAPOR.
+/// Ek kaçırma varyantları: yalnızca rapor.
 #[test]
 fn gate1_stretch2_report() {
     let s = audit_by(|v| v.id.starts_with("stretch2-"));
     report("stretch2 (informational)", &s);
 }
 
-/// Sprint 2 ek stretch'i katı doğrular (`--ignored`). Kalan bilinen sınırlamalar kapanana kadar ignore.
+/// Ek kaçırma varyantlarını katı doğrular (`--ignored`).
 #[test]
 #[ignore = "bilinen sinirlamalar (stretch2); --ignored ile kos"]
 fn gate1_stretch2_vectors_leave_no_residue() {
@@ -533,14 +520,14 @@ fn gate1_fp_probe_report() {
     println!("---- fp_probe: over-masked={over}/{total}");
 }
 
-/// R1 istisnalarına karşı yeni bypass sondaları (`r1-*`): yalnızca RAPOR.
+/// r1 bypass sondaları: yalnızca rapor.
 #[test]
 fn gate1_r1_probe_report() {
     let s = audit_by(|v| v.id.starts_with("r1-"));
     report("r1 exception probes (informational)", &s);
 }
 
-/// R1 sondalarını katı doğrular (`--ignored`).
+/// r1 sondalarını katı doğrular (`--ignored`).
 #[test]
 #[ignore = "R1 istisna sondalari; --ignored ile kos"]
 fn gate1_r1_probes_leave_no_residue() {
@@ -554,30 +541,29 @@ fn gate1_accepted_risk_report() {
     report("accepted risks (informational)", &s);
 }
 
-/// R2 sondaları (`r2-*`): yalnızca RAPOR.
+/// r2 sondaları: yalnızca rapor.
 #[test]
 fn gate1_r2_probe_report() {
     let s = audit_by(|v| v.id.starts_with("r2-"));
     report("r2 probes (informational)", &s);
 }
 
-/// R2 sondalarını katı doğrular (`--ignored`).
+/// r2 sondalarını katı doğrular (`--ignored`).
 #[test]
 #[ignore = "R2 sondalari; --ignored ile kos"]
 fn gate1_r2_probes_leave_no_residue() {
     assert_no_leaks("r2", &audit_by(|v| v.id.starts_with("r2-")));
 }
 
-/// R3 sondaları (`r3-*`): yalnızca RAPOR.
+/// r3 sondaları: yalnızca rapor.
 #[test]
 fn gate1_r3_probe_report() {
     let s = audit_by(|v| v.id.starts_with("r3-"));
     report("r3 probes (informational)", &s);
 }
 
-/// Kullanıcının 19.11.2026 YAZILI KABULÜ (A1-A6, R5-a..d) kapsamındaki `r3-*` sızıntıları: (vektör, sınıf).
-/// R5-a: kuyruk biçimleri; R5-b: kasıtlı saldırgan (bölünmüş/kodlanmış sabitler, 7+ kat base64);
-/// R5-c: diceware bağlam muafiyetleri. Kabul listesi DIŞINDA kalan her sızıntı testi KIRMIZI bırakır.
+/// 19.11.2026'da yazılı olarak kabul edilen `r3-*` sızıntıları (vektör, sınıf). Bu listenin
+/// dışındaki her sızıntı testi kırmızı bırakır.
 const ACCEPTED_R3: &[(&str, &str)] = &[
     ("r3-type-space-before-angle", "R5-b"),
     ("r3-type-concat-plus", "R5-b"),
@@ -603,7 +589,7 @@ const ACCEPTED_R3: &[(&str, &str)] = &[
     ("r3-word-camelcase-3-words", "R5-c"),
 ];
 
-/// R3 sondaları: KABUL EDİLMEMİŞ her sızıntı kırmızı; kabul edilenler sınıfıyla raporlanır (kapananlar bilgi).
+/// r3 sondaları: kabul edilmemiş her sızıntı kırmızı; kabul edilenler sınıfıyla raporlanır.
 #[test]
 fn gate1_r3_probes_leave_no_unaccepted_residue() {
     let s = audit_by(|v| v.id.starts_with("r3-"));

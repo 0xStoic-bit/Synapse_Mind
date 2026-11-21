@@ -1,16 +1,9 @@
-//! Gate 2 "denetçi": hedef süreci başlatır, canlı tam bellek dökümü alır, sırları arar (UTF-8 + UTF-16LE
-//! + anahtar için ham baytlar).
+//! Gate 2 denetçisi: hedef süreci başlatır, canlı tam döküm alır, ham sırları ve DB anahtar
+//! materyalini (ham, hex, UTF-16, `x'hex'`) arar. Maskeli metin sızıntı sayılmaz.
 //!
-//! `gate2-audit [--modes baseline,process,run,core,keyread,keyread-byvalue,dpapi,dpapi-legacy,encrypted,encrypted-closed] [--skip-control] [--wide]`
+//! `gate2-audit [--modes ...] [--skip-control] [--wide]`
 //!
-//! Arama listesi: HAM sentetik sırlar (Gate 1 vektörleri) + DB anahtar materyali (deterministik SENTETİK
-//! test anahtarı: ham 32 bayt, hex küçük/büyük harf UTF-8 + UTF-16LE, SQLCipher `x'hex'`).
-//! MASKELİ metnin RAM'de bulunması (s-core depoladığı için) sızıntı DEĞİLDİR ve aranmaz.
-//!
-//! Çıkış kodu: 0 = kontroller yakalandı ve kapı koşulları sağlandı; 1 = ham sır veya (dpapi /
-//! keyread / dpapi / encrypted-closed modunda) anahtar bulundu (ÖN ÖLÇÜM, resmi Gate 2 değil); 2 = kontrol (kasıtlı
-//! sızıntı) YAKALANAMADI (kör dedektör). SKIPPED modlar (`encrypted`: s-core API'si yok) çıkışı etkilemez.
-//! Döküm, tarif, anahtar ve DB dosyaları geçici dizinde oluşturulur ve iş bitince silinir.
+//! Çıkış: 0 = kontroller yakalandı, koşullar sağlandı; 1 = bulgu; 2 = kontrol yakalanamadı.
 
 #[cfg(windows)]
 #[path = "../common.rs"]

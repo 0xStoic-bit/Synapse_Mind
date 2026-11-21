@@ -1,12 +1,8 @@
 //! Sızıntı dedektörü: `MaskedMemoryBlock` alanlarında orijinal sırların alt dizgilerini arar.
 //!
-//! Bu modül yalnızca `s-types`'a bağlıdır; guard API'sinden bağımsızdır.
-//!
-//! Yöntem: her iğne (needle) için `min_window` (varsayılan 6, `REDTEAM_MIN_WINDOW` ile
-//! değiştirilebilir) uzunluğundaki TÜM kayan pencereler hesaplanır ve iki biçimde aranır:
-//!  1. "katlanmış ham": küçük harf + tam genişlik->ASCII (noktalama ve boşluklar korunur),
-//!  2. "yalnızca alfanümerik": her şey (boşluk, tire, sıfır genişlik, satır sonu...) atılır;
-//!     böylece yeniden biçimlendirilmiş / bölünmüş kalıntılar da yakalanır.
+//! Her sır için `min_window` (varsayılan 6, `REDTEAM_MIN_WINDOW`) uzunluğundaki tüm kayan
+//! pencereler iki biçimde aranır: katlanmış ham metin ve yalnızca alfanümerik karakterler
+//! (bölünmüş ya da yeniden biçimlendirilmiş kalıntıları yakalamak için).
 
 use crate::vectors::Vector;
 use s_types::MaskedMemoryBlock;
