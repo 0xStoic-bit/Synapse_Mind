@@ -1,6 +1,6 @@
 //! SQLite (`events`, `causality_edges`, FTS5) + `sqlite-vec` (`vec0`) hybrid store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -8,7 +8,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use s_types::{CausalityEdge, CausalityQueryHit, MaskedMemoryBlock};
 use zeroize::Zeroizing;
 
-use crate::causality::{CausalityConfig, link_event_in_tx, load_causality_chain};
+use crate::causality::{
+    CausalityConfig, link_event_in_tx, load_causality_chain, load_causality_chains_batch,
+};
 use crate::embedder::{EMBEDDING_DIM, Embedder, f32_slice_to_le_bytes, validate_embedding};
 use crate::{CoreError, Result};
 
@@ -17,6 +19,19 @@ const VEC0_K_MAX: usize = 4096;
 const TOP_APPS_LIMIT: i64 = 10;
 const MS_PER_DAY: i64 = 86_400_000;
 const MS_PER_HOUR: i64 = 3_600_000;
+
+/// Default UTF-8 byte ceiling for single-query vector embedding in `hybrid_search`.
+/// Selected from `BGESmallENV15` FP32 release measurements alongside `DEFAULT_QUERY_MAX_TOKENS = 64`
+/// to keep English (`p95 = 12.78 ms`), Turkish (`p95 = 15.31 ms`), and 4 KB pastes (`p95 = 11.19 ms`)
+/// safely within the `< 20 ms` SLA.
+pub const DEFAULT_MAX_VECTOR_QUERY_BYTES: usize = 200;
+/// Default UTF-8 byte scan ceiling for lexical BM25 extraction in `hybrid_search`.
+pub const DEFAULT_MAX_BM25_QUERY_BYTES: usize = 512;
+/// Default maximum number of unique terms emitted by `sanitize_fts_query`.
+pub const DEFAULT_MAX_BM25_TERMS: usize = 8;
+/// Metadata key inside `store_meta` storing the `Embedder::model_id` that produced the vectors
+/// currently residing in `event_vectors`.
+pub const EMBEDDING_MODEL_META_KEY: &str = "embedding_model_id";
 
 static SQLITE_VEC_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
@@ -56,6 +71,13 @@ pub struct HybridSearchConfig {
     pub reference_timestamp_ms: Option<u64>,
     pub max_chain_depth: usize,
     pub max_chain_edges: usize,
+    /// Maximum UTF-8 byte length passed to the vector query embedder (`embed_one`),
+    /// truncated cleanly on a UTF-8 and word boundary.
+    pub max_vector_query_bytes: usize,
+    /// Maximum UTF-8 byte length scanned for lexical BM25 term extraction.
+    pub max_bm25_query_bytes: usize,
+    /// Maximum number of unique case-folded terms included in the FTS5 `OR` query.
+    pub max_bm25_terms: usize,
 }
 
 impl Default for HybridSearchConfig {
@@ -68,8 +90,21 @@ impl Default for HybridSearchConfig {
             reference_timestamp_ms: None,
             max_chain_depth: 5,
             max_chain_edges: 16,
+            max_vector_query_bytes: DEFAULT_MAX_VECTOR_QUERY_BYTES,
+            max_bm25_query_bytes: DEFAULT_MAX_BM25_QUERY_BYTES,
+            max_bm25_terms: DEFAULT_MAX_BM25_TERMS,
         }
     }
+}
+
+/// Detailed result from [`MemoryStore::hybrid_search_detailed`].
+#[derive(Debug, Clone)]
+pub struct SearchOutcome {
+    pub hits: Vec<CausalityQueryHit>,
+    /// `true` when the raw query exceeded vector byte, BM25 byte, or BM25 unique-term limits.
+    pub query_truncated: bool,
+    /// `true` when semantic vector search ran; `false` when degraded to BM25-only.
+    pub semantic_used: bool,
 }
 
 /// Aggregate memory and activity statistics returned for the Memory Panel.
@@ -116,12 +151,14 @@ impl<E: Embedder> MemoryStore<E> {
         ensure_sqlite_vec_registered()?;
         let conn = Connection::open_in_memory()?;
         init_schema(&conn)?;
-        Ok(Self {
+        let mut store = Self {
             conn,
             embedder,
             causality,
             db_path: None,
-        })
+        };
+        store.reconcile_embedding_model()?;
+        Ok(store)
     }
 
     /// Opens or creates an encrypted SQLCipher store at `path` using a 256-bit raw key.
@@ -158,12 +195,14 @@ impl<E: Embedder> MemoryStore<E> {
         configure_encrypted_connection(&conn, key)?;
         init_schema(&conn)?;
 
-        Ok(Self {
+        let mut store = Self {
             conn,
             embedder,
             causality,
             db_path: Some(path.to_path_buf()),
-        })
+        };
+        store.reconcile_embedding_model()?;
+        Ok(store)
     }
 
     /// Returns the loaded `sqlite-vec` version string (e.g. `v0.1.10-alpha.4`).
@@ -177,6 +216,57 @@ impl<E: Embedder> MemoryStore<E> {
     /// Returns a shared reference to the underlying `rusqlite::Connection` for inspection/testing.
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Reads the persisted `embedding_model_id` from the encrypted `store_meta` table.
+    ///
+    /// Returns `None` for legacy v0.1.0 databases or stores whose embedder has not yet
+    /// become ready and reconciled.
+    pub fn stored_embedding_model_id(&self) -> Result<Option<String>> {
+        stored_embedding_model_id_conn(&self.conn)
+    }
+
+    /// Returns how many embeddable events currently lack a vector in `event_vectors`.
+    ///
+    /// Queries SQLite only without invoking the embedder (safe to call even when an
+    /// idle-unloaded [`ManagedEmbedder`](crate::ManagedEmbedder) is sleeping).
+    pub fn pending_embedding_backfill_count(&self) -> Result<u64> {
+        let count_i64: i64 = self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM events e
+             WHERE e.has_embedding_payload = 1
+               AND length(trim(e.clean_text)) > 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM event_vectors v WHERE v.event_id = e.event_id
+               )",
+            [],
+            |row| row.get(0),
+        )?;
+        u64::try_from(count_i64)
+            .map_err(|_| CoreError::IntegerOverflow("negative pending backfill count"))
+    }
+
+    /// Ensures `event_vectors` matches the active ready embedder's [`Embedder::model_id`].
+    ///
+    /// - While `self.embedder.is_ready()` is `false` (downloading or BM25 fallback), this is a
+    ///   strict no-op returning `Ok(false)` without writing `store_meta` or deleting vectors.
+    /// - When ready and `store_meta['embedding_model_id']` matches `self.embedder.model_id()`,
+    ///   returns `Ok(false)` idempotently.
+    /// - When ready and the stored identifier is absent or differs, atomically clears
+    ///   `event_vectors` (if any vectors exist) and updates `store_meta['embedding_model_id']` in
+    ///   a single SQLite transaction. Returns `Ok(true)` when existing vectors were cleared.
+    pub fn reconcile_embedding_model(&mut self) -> Result<bool> {
+        if !self.embedder.is_ready() {
+            return Ok(false);
+        }
+        let current_id = validated_model_id(&self.embedder)?;
+        if stored_embedding_model_id_conn(&self.conn)?.as_deref() == Some(current_id) {
+            return Ok(false);
+        }
+        let tx = self.conn.transaction()?;
+        let cleared = reconcile_embedding_model_in_tx(&tx, current_id)?;
+        tx.commit()?;
+        Ok(cleared)
     }
 
     /// Returns the next monotonic `event_id` (`0` on an empty store, or `MAX(event_id) + 1`).
@@ -234,15 +324,34 @@ impl<E: Embedder> MemoryStore<E> {
         let _timestamp_ms_i64 = i64::try_from(block.timestamp_ms)
             .map_err(|_| CoreError::IntegerOverflow("timestamp_ms exceeds i64::MAX"))?;
 
-        let embedding = if needs_embedding(block) {
-            let vec = self.embedder.embed_one(&block.clean_text)?;
-            validate_embedding(&vec, EMBEDDING_DIM)?;
-            Some(vec)
+        let embedding = if needs_embedding(block) && self.embedder.is_ready() {
+            match self.embedder.embed_batch(&[block.clean_text.as_str()]) {
+                Ok(mut vecs) => {
+                    if vecs.len() != 1 {
+                        return Err(CoreError::EmbeddingCountMismatch {
+                            expected: 1,
+                            actual: vecs.len(),
+                        });
+                    }
+                    let vec = vecs.pop().ok_or(CoreError::EmbeddingCountMismatch {
+                        expected: 1,
+                        actual: 0,
+                    })?;
+                    validate_embedding(&vec, EMBEDDING_DIM)?;
+                    Some(vec)
+                }
+                Err(CoreError::EmbedderUnavailable(_)) => None,
+                Err(err) => return Err(err),
+            }
         } else {
             None
         };
 
         let tx = self.conn.transaction()?;
+        if embedding.is_some() {
+            let current_id = validated_model_id(&self.embedder)?;
+            let _ = reconcile_embedding_model_in_tx(&tx, current_id)?;
+        }
         let created_edges = write_block_in_tx(
             &tx,
             block,
@@ -264,6 +373,7 @@ impl<E: Embedder> MemoryStore<E> {
             return Ok(Vec::new());
         }
 
+        let can_embed = self.embedder.is_ready();
         let mut embed_slots: Vec<Option<usize>> = Vec::with_capacity(blocks.len());
         let mut embed_texts: Vec<&str> = Vec::new();
         for block in blocks {
@@ -271,7 +381,7 @@ impl<E: Embedder> MemoryStore<E> {
                 .map_err(|_| CoreError::IntegerOverflow("event_id exceeds i64::MAX"))?;
             i64::try_from(block.timestamp_ms)
                 .map_err(|_| CoreError::IntegerOverflow("timestamp_ms exceeds i64::MAX"))?;
-            if needs_embedding(block) {
+            if can_embed && needs_embedding(block) {
                 embed_slots.push(Some(embed_texts.len()));
                 embed_texts.push(block.clean_text.as_str());
             } else {
@@ -282,20 +392,32 @@ impl<E: Embedder> MemoryStore<E> {
         let vectors = if embed_texts.is_empty() {
             Vec::new()
         } else {
-            let vecs = self.embedder.embed_batch(&embed_texts)?;
-            if vecs.len() != embed_texts.len() {
-                return Err(CoreError::EmbeddingCountMismatch {
-                    expected: embed_texts.len(),
-                    actual: vecs.len(),
-                });
+            match self.embedder.embed_batch(&embed_texts) {
+                Ok(vecs) => {
+                    if vecs.len() != embed_texts.len() {
+                        return Err(CoreError::EmbeddingCountMismatch {
+                            expected: embed_texts.len(),
+                            actual: vecs.len(),
+                        });
+                    }
+                    for vec in &vecs {
+                        validate_embedding(vec, EMBEDDING_DIM)?;
+                    }
+                    vecs
+                }
+                Err(CoreError::EmbedderUnavailable(_)) => {
+                    embed_slots.fill(None);
+                    Vec::new()
+                }
+                Err(err) => return Err(err),
             }
-            for vec in &vecs {
-                validate_embedding(vec, EMBEDDING_DIM)?;
-            }
-            vecs
         };
 
         let tx = self.conn.transaction()?;
+        if !vectors.is_empty() {
+            let current_id = validated_model_id(&self.embedder)?;
+            let _ = reconcile_embedding_model_in_tx(&tx, current_id)?;
+        }
         let mut all_edges = Vec::new();
         for (block, slot) in blocks.iter().zip(embed_slots) {
             let embedding = slot.map(|idx| vectors[idx].as_slice());
@@ -324,15 +446,33 @@ impl<E: Embedder> MemoryStore<E> {
         k: usize,
         config: &HybridSearchConfig,
     ) -> Result<Vec<CausalityQueryHit>> {
+        Ok(self.hybrid_search_detailed(query, k, config)?.hits)
+    }
+
+    /// Executes hybrid search and returns hits along with query truncation and semantic fallback metadata.
+    pub fn hybrid_search_detailed(
+        &self,
+        query: &str,
+        k: usize,
+        config: &HybridSearchConfig,
+    ) -> Result<SearchOutcome> {
         if k == 0 || query.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok(SearchOutcome {
+                hits: Vec::new(),
+                query_truncated: false,
+                semantic_used: false,
+            });
         }
 
         let max_ts_opt: Option<i64> =
             self.conn
                 .query_row("SELECT MAX(timestamp_ms) FROM events", [], |row| row.get(0))?;
         let Some(max_ts_i64) = max_ts_opt else {
-            return Ok(Vec::new());
+            return Ok(SearchOutcome {
+                hits: Vec::new(),
+                query_truncated: false,
+                semantic_used: false,
+            });
         };
         let default_ref_ts = u64::try_from(max_ts_i64)
             .map_err(|_| CoreError::IntegerOverflow("negative timestamp_ms in events table"))?;
@@ -344,8 +484,23 @@ impl<E: Embedder> MemoryStore<E> {
 
         let mut candidates: HashMap<u64, CandidateScores> = HashMap::new();
 
-        // 1. Lexical BM25 search via FTS5.
-        if let Some(fts_query) = sanitize_fts_query(query) {
+        // 1. Lexical BM25 search via FTS5 (bounded bytes and unique deduplicated terms).
+        let (bm25_slice, bm25_bytes_truncated) =
+            truncate_query_prefix(query, config.max_bm25_query_bytes);
+        // When an oversized paste exceeded `max_bm25_query_bytes`, tighten the default OR
+        // fan-out to 4 informative terms so boilerplate tails do not sweep thousands of rows,
+        // while keeping up to 8 terms for normal user queries (`<= max_bm25_query_bytes`).
+        let effective_max_bm25_terms =
+            if bm25_bytes_truncated && config.max_bm25_terms == DEFAULT_MAX_BM25_TERMS {
+                config.max_bm25_terms.min(4)
+            } else {
+                config.max_bm25_terms
+            };
+        let mut bm25_terms_truncated = false;
+        if let Some((fts_query, terms_truncated)) =
+            sanitize_fts_query_limited(bm25_slice, effective_max_bm25_terms)
+        {
+            bm25_terms_truncated = terms_truncated;
             let mut stmt = self.conn.prepare_cached(
                 "SELECT rowid, bm25(events_fts, 0.5, 1.0, 2.0) AS raw_bm25
                  FROM events_fts
@@ -366,106 +521,134 @@ impl<E: Embedder> MemoryStore<E> {
             }
         }
 
-        // 2. Semantic cosine KNN search via `sqlite-vec`.
-        let query_vec = self.embedder.embed_one(query)?;
-        validate_embedding(&query_vec, EMBEDDING_DIM)?;
-        let query_blob = f32_slice_to_le_bytes(&query_vec);
+        // 2. Semantic cosine KNN search via `sqlite-vec` with word-boundary pre-truncation
+        //    and graceful BM25-only fallback when the embedder is not ready, unavailable,
+        //    or persisted vectors belong to a different embedding model not yet reconciled.
+        let (vector_slice, vector_bytes_truncated) =
+            truncate_query_prefix(query, config.max_vector_query_bytes);
+        let vectors_compatible = if !vector_slice.is_empty() && self.embedder.is_ready() {
+            let current_id = validated_model_id(&self.embedder)?;
+            embedding_vectors_compatible(&self.conn, current_id)?
+        } else {
+            false
+        };
+        let mut semantic_used = false;
+        let query_blob_opt = if vectors_compatible {
+            match self.embedder.embed_one(vector_slice) {
+                Ok(query_vec) => {
+                    validate_embedding(&query_vec, EMBEDDING_DIM)?;
+                    semantic_used = true;
+                    Some(f32_slice_to_le_bytes(&query_vec))
+                }
+                Err(CoreError::EmbedderUnavailable(_)) => None,
+                Err(err) => return Err(err),
+            }
+        } else {
+            None
+        };
 
-        {
-            let mut stmt = self.conn.prepare_cached(
-                "SELECT event_id, distance
-                 FROM event_vectors
-                 WHERE embedding MATCH ?1 AND k = ?2
-                 ORDER BY distance ASC",
-            )?;
-            let rows = stmt
-                .query_map(params![query_blob.as_slice(), candidate_limit_i64], |row| {
+        if let Some(query_blob) = query_blob_opt.as_deref() {
+            let mut vec_matched_any = false;
+            {
+                let mut stmt = self.conn.prepare_cached(
+                    "SELECT event_id, distance
+                     FROM event_vectors
+                     WHERE embedding MATCH ?1 AND k = ?2
+                     ORDER BY distance ASC",
+                )?;
+                let rows = stmt.query_map(params![query_blob, candidate_limit_i64], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
                 })?;
-            for row in rows {
-                let (id_i64, distance) = row?;
-                let id = u64::try_from(id_i64).map_err(|_| {
-                    CoreError::IntegerOverflow("negative event_id in event_vectors")
-                })?;
-                let cosine_sim = (1.0_f64 - distance).clamp(0.0, 1.0) as f32;
-                candidates.entry(id).or_default().cosine = Some(cosine_sim);
+                for row in rows {
+                    vec_matched_any = true;
+                    let (id_i64, distance) = row?;
+                    let id = u64::try_from(id_i64).map_err(|_| {
+                        CoreError::IntegerOverflow("negative event_id in event_vectors")
+                    })?;
+                    let cosine_sim = (1.0_f64 - distance).clamp(0.0, 1.0) as f32;
+                    candidates.entry(id).or_default().cosine = Some(cosine_sim);
+                }
             }
-        }
 
-        // 3. Cross-fill cosine similarity for BM25-only candidates.
-        {
-            let mut point_vec_stmt = self.conn.prepare_cached(
-                "SELECT vec_distance_cosine(embedding, ?1)
-                 FROM event_vectors
-                 WHERE event_id = ?2",
-            )?;
-            for (&event_id, scores) in &mut candidates {
-                if scores.cosine.is_none() {
-                    let id_i64 = i64::try_from(event_id)
-                        .map_err(|_| CoreError::IntegerOverflow("event_id exceeds i64::MAX"))?;
-                    let dist_opt: Option<f64> = point_vec_stmt
-                        .query_row(params![query_blob.as_slice(), id_i64], |row| row.get(0))
-                        .optional()?;
-                    let cosine_sim = dist_opt
-                        .map(|d| (1.0_f64 - d).clamp(0.0, 1.0) as f32)
-                        .unwrap_or(0.0);
-                    scores.cosine = Some(cosine_sim);
+            // 3. Cross-fill cosine similarity for BM25-only candidates (skip when vec0 is empty).
+            if vec_matched_any {
+                let missing_vec_ids: Vec<u64> = candidates
+                    .iter()
+                    .filter_map(|(&id, scores)| scores.cosine.is_none().then_some(id))
+                    .collect();
+                if !missing_vec_ids.is_empty() {
+                    let mut point_vec_stmt = self.conn.prepare_cached(
+                        "SELECT vec_distance_cosine(embedding, ?1)
+                         FROM event_vectors
+                         WHERE event_id = ?2",
+                    )?;
+                    for event_id in missing_vec_ids {
+                        let id_i64 = i64::try_from(event_id)
+                            .map_err(|_| CoreError::IntegerOverflow("event_id exceeds i64::MAX"))?;
+                        let dist_opt: Option<f64> = point_vec_stmt
+                            .query_row(params![query_blob, id_i64], |row| row.get(0))
+                            .optional()?;
+                        let cosine_sim = dist_opt
+                            .map(|d| (1.0_f64 - d).clamp(0.0, 1.0) as f32)
+                            .unwrap_or(0.0);
+                        if let Some(scores) = candidates.get_mut(&event_id) {
+                            scores.cosine = Some(cosine_sim);
+                        }
+                    }
                 }
             }
         }
 
         // 4. Score candidates by BM25 + cosine + recency.
-        let weight_sum =
-            (config.bm25_weight + config.vector_weight + config.recency_weight).max(f32::EPSILON);
+        let effective_vector_weight = if semantic_used {
+            config.vector_weight
+        } else {
+            0.0
+        };
+        let weight_sum = (config.bm25_weight + effective_vector_weight + config.recency_weight)
+            .max(f32::EPSILON);
         let half_life = config.recency_half_life_seconds.max(1.0);
 
-        let mut event_stmt = self.conn.prepare_cached(
-            "SELECT timestamp_ms, process_name, sanitized_title, clean_text
-             FROM events
-             WHERE event_id = ?1",
-        )?;
+        let active_ids: Vec<u64> = candidates
+            .iter()
+            .filter_map(|(&event_id, cand)| {
+                let bm25_s = cand.bm25.unwrap_or(0.0);
+                let cosine_s = cand.cosine.unwrap_or(0.0);
+                if bm25_s > 0.0 || cosine_s > 0.0 {
+                    Some(event_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let candidate_timestamps = fetch_event_timestamps(&self.conn, &active_ids)?;
 
-        struct ScoredRow {
+        struct ScoredCandidate {
             event_id: u64,
             timestamp_ms: u64,
             score: f32,
-            summary_snippet: String,
-            matched_app: String,
         }
 
-        let mut scored = Vec::with_capacity(candidates.len());
-        for (event_id, cand) in candidates {
-            let bm25_s = cand.bm25.unwrap_or(0.0);
-            let cosine_s = cand.cosine.unwrap_or(0.0);
-            if bm25_s <= 0.0 && cosine_s <= 0.0 {
-                continue;
-            }
-            let id_i64 = i64::try_from(event_id)
-                .map_err(|_| CoreError::IntegerOverflow("event_id exceeds i64::MAX"))?;
-            let row_opt: Option<(i64, String, String, String)> = event_stmt
-                .query_row([id_i64], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .optional()?;
-            let Some((ts_i64, process_name, sanitized_title, clean_text)) = row_opt else {
+        let mut scored = Vec::with_capacity(active_ids.len());
+        for event_id in active_ids {
+            let Some(&timestamp_ms) = candidate_timestamps.get(&event_id) else {
                 continue;
             };
-            let timestamp_ms = u64::try_from(ts_i64)
-                .map_err(|_| CoreError::IntegerOverflow("negative timestamp_ms in events table"))?;
+            let cand = &candidates[&event_id];
+            let bm25_s = cand.bm25.unwrap_or(0.0);
+            let cosine_s = cand.cosine.unwrap_or(0.0);
             let age_seconds = reference_ts_ms.saturating_sub(timestamp_ms) as f64 / 1000.0;
             let recency_s = 0.5_f64.powf(age_seconds / half_life) as f32;
 
             let score = (config.bm25_weight * bm25_s
-                + config.vector_weight * cosine_s
+                + effective_vector_weight * cosine_s
                 + config.recency_weight * recency_s)
                 / weight_sum;
 
-            scored.push(ScoredRow {
+            scored.push(ScoredCandidate {
                 event_id,
                 timestamp_ms,
                 score,
-                summary_snippet: snippet_for_event(&clean_text, &sanitized_title),
-                matched_app: process_name,
             });
         }
 
@@ -477,25 +660,36 @@ impl<E: Embedder> MemoryStore<E> {
         });
         scored.truncate(k);
 
-        // 5. Attach connected causality chain for the top-k hits.
+        // 5. Batch-fetch display fields and BFS causality chains only for the top-k winners.
+        let winner_ids: Vec<u64> = scored.iter().map(|s| s.event_id).collect();
+        let winner_details = fetch_event_details(&self.conn, &winner_ids)?;
+        let chains = load_causality_chains_batch(
+            &self.conn,
+            &winner_ids,
+            config.max_chain_depth,
+            config.max_chain_edges,
+        )?;
         let mut hits = Vec::with_capacity(scored.len());
-        for item in scored {
-            let causality_chain = load_causality_chain(
-                &self.conn,
-                item.event_id,
-                config.max_chain_depth,
-                config.max_chain_edges,
-            )?;
+        for (item, causality_chain) in scored.into_iter().zip(chains) {
+            let Some((process_name, sanitized_title, clean_text)) =
+                winner_details.get(&item.event_id)
+            else {
+                continue;
+            };
             hits.push(CausalityQueryHit {
                 event_id: item.event_id,
                 timestamp_ms: item.timestamp_ms,
                 score: item.score,
-                summary_snippet: item.summary_snippet,
-                matched_app: item.matched_app,
+                summary_snippet: snippet_for_event(clean_text, sanitized_title),
+                matched_app: process_name.clone(),
                 causality_chain,
             });
         }
-        Ok(hits)
+        Ok(SearchOutcome {
+            hits,
+            query_truncated: vector_bytes_truncated || bm25_bytes_truncated || bm25_terms_truncated,
+            semantic_used,
+        })
     }
 
     /// Computes aggregate Memory Panel statistics for events with `timestamp_ms >= since_ms`.
@@ -693,6 +887,71 @@ impl<E: Embedder> MemoryStore<E> {
         u64::try_from(deleted)
             .map_err(|_| CoreError::IntegerOverflow("deleted event count out of u64 range"))
     }
+
+    /// Reconciles `store_meta['embedding_model_id']` (clearing stale vectors on model change)
+    /// and then computes and inserts missing `vec0` embeddings for up to `max_blocks` events
+    /// (newest first).
+    ///
+    /// Returns `Ok(0)` without touching metadata or vectors if the embedder is not ready yet.
+    pub fn backfill_missing_embeddings(&mut self, max_blocks: usize) -> Result<usize> {
+        if max_blocks == 0 || !self.embedder.is_ready() {
+            return Ok(0);
+        }
+        let _ = self.reconcile_embedding_model()?;
+        let limit_i64 = i64::try_from(max_blocks)
+            .map_err(|_| CoreError::IntegerOverflow("max_blocks exceeds i64::MAX"))?;
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT e.event_id, e.clean_text
+                 FROM events e
+                 WHERE e.has_embedding_payload = 1
+                   AND length(trim(e.clean_text)) > 0
+                   AND NOT EXISTS (
+                       SELECT 1 FROM event_vectors v WHERE v.event_id = e.event_id
+                   )
+                 ORDER BY e.event_id DESC
+                 LIMIT ?1",
+            )?;
+            let mapped = stmt.query_map([limit_i64], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let mut collected = Vec::new();
+            for item in mapped {
+                collected.push(item?);
+            }
+            collected
+        };
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let text_refs: Vec<&str> = rows.iter().map(|(_, text)| text.as_str()).collect();
+        let vectors = match self.embedder.embed_batch(&text_refs) {
+            Ok(vecs) => vecs,
+            Err(CoreError::EmbedderUnavailable(_)) => return Ok(0),
+            Err(err) => return Err(err),
+        };
+        if vectors.len() != rows.len() {
+            return Err(CoreError::EmbeddingCountMismatch {
+                expected: rows.len(),
+                actual: vectors.len(),
+            });
+        }
+        for vec in &vectors {
+            validate_embedding(vec, EMBEDDING_DIM)?;
+        }
+
+        let tx = self.conn.transaction()?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT INTO event_vectors (event_id, embedding) VALUES (?1, ?2)",
+            )?;
+            for ((event_id, _), vec) in rows.iter().zip(&vectors) {
+                let blob = f32_slice_to_le_bytes(vec);
+                ins.execute(params![event_id, blob])?;
+            }
+        }
+        tx.commit()?;
+        Ok(rows.len())
+    }
 }
 
 /// Consumes sanitized `MaskedMemoryBlock` events from `s-guard` until the channel closes.
@@ -718,6 +977,83 @@ pub async fn run_ingestion<E: Embedder + 'static>(
         ingested_count += 1;
     }
     Ok(ingested_count)
+}
+
+fn prepare_bucketed_in_params(chunk: &[u64], max_chunk: usize) -> Result<(Vec<i64>, String)> {
+    let bucket_len = chunk.len().next_power_of_two().min(max_chunk);
+    let mut params_i64 = Vec::with_capacity(bucket_len);
+    for &id in chunk {
+        params_i64.push(
+            i64::try_from(id)
+                .map_err(|_| CoreError::IntegerOverflow("event_id exceeds i64::MAX"))?,
+        );
+    }
+    if let Some(&pad_id) = params_i64.first() {
+        params_i64.resize(bucket_len, pad_id);
+    }
+    let placeholders = vec!["?"; params_i64.len()].join(",");
+    Ok((params_i64, placeholders))
+}
+
+fn fetch_event_timestamps(conn: &Connection, event_ids: &[u64]) -> Result<HashMap<u64, u64>> {
+    const CHUNK_SIZE: usize = 256;
+    if event_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::with_capacity(event_ids.len());
+    for chunk in event_ids.chunks(CHUNK_SIZE) {
+        let (params_i64, placeholders) = prepare_bucketed_in_params(chunk, CHUNK_SIZE)?;
+        let sql =
+            format!("SELECT event_id, timestamp_ms FROM events WHERE event_id IN ({placeholders})");
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_i64.iter()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (id_i64, ts_i64) = row?;
+            let id = u64::try_from(id_i64)
+                .map_err(|_| CoreError::IntegerOverflow("negative event_id in events table"))?;
+            let ts = u64::try_from(ts_i64)
+                .map_err(|_| CoreError::IntegerOverflow("negative timestamp_ms in events table"))?;
+            out.insert(id, ts);
+        }
+    }
+    Ok(out)
+}
+
+fn fetch_event_details(
+    conn: &Connection,
+    event_ids: &[u64],
+) -> Result<HashMap<u64, (String, String, String)>> {
+    const CHUNK_SIZE: usize = 256;
+    if event_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut out = HashMap::with_capacity(event_ids.len());
+    for chunk in event_ids.chunks(CHUNK_SIZE) {
+        let (params_i64, placeholders) = prepare_bucketed_in_params(chunk, CHUNK_SIZE)?;
+        let sql = format!(
+            "SELECT event_id, process_name, sanitized_title, clean_text
+             FROM events
+             WHERE event_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_i64.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (id_i64, process_name, sanitized_title, clean_text) = row?;
+            let id = u64::try_from(id_i64)
+                .map_err(|_| CoreError::IntegerOverflow("negative event_id in events table"))?;
+            out.insert(id, (process_name, sanitized_title, clean_text));
+        }
+    }
+    Ok(out)
 }
 
 fn needs_embedding(block: &MaskedMemoryBlock) -> bool {
@@ -812,6 +1148,53 @@ fn validate_embedder_dim(embedder: &impl Embedder) -> Result<()> {
     Ok(())
 }
 
+fn validated_model_id(embedder: &impl Embedder) -> Result<&str> {
+    let id = embedder.model_id().trim();
+    if id.is_empty() {
+        return Err(CoreError::Embedder(
+            "ready embedder returned empty model_id".to_owned(),
+        ));
+    }
+    Ok(id)
+}
+
+fn stored_embedding_model_id_conn(conn: &Connection) -> Result<Option<String>> {
+    let mut stmt = conn.prepare_cached("SELECT value FROM store_meta WHERE key = ?1")?;
+    let value: Option<String> = stmt
+        .query_row([EMBEDDING_MODEL_META_KEY], |row| row.get(0))
+        .optional()?;
+    Ok(value.filter(|v| !v.trim().is_empty()))
+}
+
+fn has_any_vectors(conn: &Connection) -> Result<bool> {
+    let mut stmt = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_vectors)")?;
+    let exists: i64 = stmt.query_row([], |row| row.get(0))?;
+    Ok(exists != 0)
+}
+
+fn reconcile_embedding_model_in_tx(tx: &Transaction<'_>, current_id: &str) -> Result<bool> {
+    if stored_embedding_model_id_conn(tx)?.as_deref() == Some(current_id) {
+        return Ok(false);
+    }
+    let had_vectors = has_any_vectors(tx)?;
+    if had_vectors {
+        tx.execute("DELETE FROM event_vectors", [])?;
+    }
+    tx.execute(
+        "INSERT INTO store_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![EMBEDDING_MODEL_META_KEY, current_id],
+    )?;
+    Ok(had_vectors)
+}
+
+fn embedding_vectors_compatible(conn: &Connection, current_id: &str) -> Result<bool> {
+    if stored_embedding_model_id_conn(conn)?.as_deref() == Some(current_id) {
+        return Ok(true);
+    }
+    Ok(!has_any_vectors(conn)?)
+}
+
 fn validate_encrypted_db_path(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
         return Err(CoreError::InvalidDatabasePath(
@@ -837,7 +1220,7 @@ fn validate_encrypted_db_path(path: &Path) -> Result<()> {
 fn configure_encrypted_connection(conn: &Connection, key: &[u8; 32]) -> Result<()> {
     // Enable SQLCipher memory locking and random-overwrite-on-free BEFORE submitting key
     // material so SQLite's parser/VDBE buffers for `PRAGMA key` are wiped on finalization.
-    conn.execute_batch("PRAGMA cipher_memory_security = ON; PRAGMA temp_store = MEMORY;")?;
+    conn.execute_batch("PRAGMA cipher_memory_security = ON;")?;
 
     let cipher_version: Option<String> = conn
         .query_row("PRAGMA cipher_version", [], |row| row.get(0))
@@ -875,6 +1258,10 @@ fn configure_encrypted_connection(conn: &Connection, key: &[u8; 32]) -> Result<(
                     .to_owned(),
             ),
         })?;
+
+    // Configure temp storage and an 8 MiB page cache only AFTER SQLCipher unlocks page 1 so
+    // `PRAGMA key` executes against a pristine connection state.
+    conn.execute_batch("PRAGMA temp_store = MEMORY; PRAGMA cache_size = -8192;")?;
 
     Ok(())
 }
@@ -973,23 +1360,133 @@ fn init_schema(conn: &Connection) -> Result<()> {
          CREATE VIRTUAL TABLE IF NOT EXISTS event_vectors USING vec0(
              event_id INTEGER PRIMARY KEY,
              embedding float[384] distance_metric=cosine
+         );
+
+         CREATE TABLE IF NOT EXISTS store_meta (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
          );",
     )?;
     Ok(())
 }
 
-/// Converts arbitrary user input into a safe FTS5 `OR` query over double-quoted tokens.
+/// Trims leading/trailing whitespace and truncates `query` to at most `max_bytes` UTF-8 bytes
+/// on a valid UTF-8 character and word boundary, returning `(prefix, was_truncated)`.
+pub fn truncate_query_prefix(query: &str, max_bytes: usize) -> (&str, bool) {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return ("", false);
+    }
+    if max_bytes == 0 {
+        return ("", true);
+    }
+    if trimmed.len() <= max_bytes {
+        return (trimmed, false);
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return ("", true);
+    }
+
+    let at_word_boundary = trimmed[end..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        || trimmed[..end]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace);
+
+    let cut = if at_word_boundary {
+        end
+    } else if let Some(ws_idx) = trimmed[..end].rfind(char::is_whitespace) {
+        ws_idx
+    } else if let Some(sep_idx) = trimmed[..end].rfind(|c: char| !c.is_alphanumeric() && c != '_') {
+        if sep_idx > 0 { sep_idx } else { end }
+    } else {
+        end
+    };
+
+    let prefix = trimmed[..cut].trim_end();
+    if prefix.is_empty() {
+        (trimmed[..end].trim_end(), true)
+    } else {
+        (prefix, true)
+    }
+}
+
+/// Converts arbitrary user input into a safe FTS5 `OR` query over double-quoted tokens,
+/// deduplicating terms case-insensitively and capping at [`DEFAULT_MAX_BM25_TERMS`].
+#[cfg(test)]
 pub(crate) fn sanitize_fts_query(raw: &str) -> Option<String> {
-    let tokens: Vec<String> = raw
+    sanitize_fts_query_limited(raw, DEFAULT_MAX_BM25_TERMS).map(|(query, _)| query)
+}
+
+/// Converts `raw` into a deduplicated, term-bounded FTS5 `OR` query, returning
+/// `(fts_query, was_term_truncated)`.
+///
+/// When unique tokens exceed `max_terms`, prioritizes informative tokens (`>= 3` chars and not
+/// pure ASCII digits) over 1–2 char fragments / numeric tokens so timestamps, line numbers, and
+/// short connectors do not crowd out error codes or domain terms. Short queries (`<= max_terms`)
+/// keep all tokens in their original order.
+pub(crate) fn sanitize_fts_query_limited(raw: &str, max_terms: usize) -> Option<(String, bool)> {
+    if max_terms == 0 {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let mut ordered_all: Vec<String> = Vec::new();
+    let mut primary: Vec<String> = Vec::new();
+    let mut secondary: Vec<String> = Vec::new();
+
+    for tok in raw
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|tok| !tok.is_empty())
-        .map(|tok| format!("\"{}\"", tok.replace('"', "\"\"")))
-        .collect();
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens.join(" OR "))
+    {
+        // Strip U+0307 combining dot above produced by `'İ'.to_lowercase()` so Turkish
+        // `"ŞİFRELEME"` and `"Şifreleme"` deduplicate identically while keeping `'ı'` distinct.
+        let normalized: String = tok
+            .to_lowercase()
+            .chars()
+            .filter(|&c| c != '\u{0307}')
+            .collect();
+        if !seen.insert(normalized) {
+            continue;
+        }
+        let quoted = format!("\"{}\"", tok.replace('"', "\"\""));
+        let is_informative = tok.chars().count() >= 3 && !tok.bytes().all(|b| b.is_ascii_digit());
+        if ordered_all.len() <= max_terms {
+            ordered_all.push(quoted.clone());
+        }
+        if is_informative {
+            if primary.len() < max_terms {
+                primary.push(quoted);
+            }
+        } else if secondary.len() < max_terms {
+            secondary.push(quoted);
+        }
+        if primary.len() >= max_terms && ordered_all.len() > max_terms {
+            return Some((primary.join(" OR "), true));
+        }
     }
+
+    if ordered_all.is_empty() {
+        return None;
+    }
+    if ordered_all.len() <= max_terms {
+        return Some((ordered_all.join(" OR "), false));
+    }
+    let mut selected = primary;
+    for tok in secondary {
+        if selected.len() >= max_terms {
+            break;
+        }
+        selected.push(tok);
+    }
+    Some((selected.join(" OR "), true))
 }
 
 fn snippet_for_event(clean_text: &str, sanitized_title: &str) -> String {
@@ -1013,6 +1510,7 @@ fn build_summary_snippet(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedder::ManagedEmbedder;
     use s_types::{AppContext, EventSource};
     use tokio::sync::mpsc;
 
@@ -1021,6 +1519,10 @@ mod tests {
     struct DeterministicTestEmbedder;
 
     impl Embedder for DeterministicTestEmbedder {
+        fn model_id(&self) -> &str {
+            crate::embedder::MODEL_ID_DEVHASH
+        }
+
         fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
             Ok(texts.iter().map(|t| project_text_to_unit_vec(t)).collect())
         }
@@ -2226,5 +2728,958 @@ mod tests {
             .expect("search post-vacuum");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].event_id, 0);
+    }
+
+    #[test]
+    fn truncate_query_prefix_respects_utf8_turkish_word_boundaries_and_empty_queries() {
+        assert_eq!(truncate_query_prefix("", 240), ("", false));
+        assert_eq!(truncate_query_prefix("   \t\n  ", 240), ("", false));
+        assert_eq!(
+            truncate_query_prefix("kısa sorgu", 240),
+            ("kısa sorgu", false)
+        );
+
+        // Turkish multi-byte chars: "güvenlik"(9) + " "(1) + "şifreleme"(10) + " "(1) + "doğrulama"(10) = 31 bytes.
+        // Cutting at 25 lands mid-word inside "doğrulama" and must back off to "güvenlik şifreleme".
+        let tr = "  güvenlik şifreleme doğrulama ölçümü  ";
+        let (cut, truncated) = truncate_query_prefix(tr, 25);
+        assert!(truncated);
+        assert_eq!(cut, "güvenlik şifreleme");
+        assert!(cut.len() <= 25);
+
+        // Cutting mid-codepoint inside 'ğ' (bytes 23..25) must also never panic and stay <= max_bytes.
+        let (cut_mid, truncated_mid) = truncate_query_prefix(tr, 24);
+        assert!(truncated_mid);
+        assert_eq!(cut_mid, "güvenlik şifreleme");
+
+        // Exact boundary at end of second word ("güvenlik şifreleme" = 20 bytes) keeps second word.
+        let (cut_exact, truncated_exact) = truncate_query_prefix(tr, 20);
+        assert!(truncated_exact);
+        assert_eq!(cut_exact, "güvenlik şifreleme");
+
+        // Unbroken Turkish token longer than max_bytes still truncates on valid char boundary.
+        let unbroken = "şğüöçıŞĞÜÖÇİ".repeat(5);
+        let (cut_unbroken, trunc_unbroken) = truncate_query_prefix(&unbroken, 11);
+        assert!(trunc_unbroken);
+        assert!(cut_unbroken.len() <= 11);
+        assert!(!cut_unbroken.is_empty());
+    }
+
+    #[test]
+    fn sanitize_fts_query_deduplicates_turkish_and_caps_terms() {
+        assert!(sanitize_fts_query("").is_none());
+        assert!(sanitize_fts_query("   \n\t ").is_none());
+        assert!(sanitize_fts_query("... --- !!!").is_none());
+
+        let (deduped, truncated) = sanitize_fts_query_limited(
+            "Şifreleme şifreleme ŞİFRELEME doğrulama DOĞRULAMA ölçüm",
+            10,
+        )
+        .expect("fts query");
+        assert!(!truncated);
+        assert_eq!(deduped, "\"Şifreleme\" OR \"doğrulama\" OR \"ölçüm\"");
+
+        let many: String = (0..50)
+            .map(|i| format!("terim_{i}_özgün"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (capped, was_capped) =
+            sanitize_fts_query_limited(&many, DEFAULT_MAX_BM25_TERMS).expect("capped fts");
+        assert!(was_capped);
+        assert_eq!(capped.split(" OR ").count(), DEFAULT_MAX_BM25_TERMS);
+    }
+
+    #[test]
+    fn hybrid_search_handles_4kb_paste_turkish_and_empty_query_with_bounded_embedder_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct LengthAssertingEmbedder {
+            max_seen_bytes: Arc<AtomicUsize>,
+        }
+
+        impl Embedder for LengthAssertingEmbedder {
+            fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+                Ok(texts.iter().map(|t| project_text_to_unit_vec(t)).collect())
+            }
+
+            fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+                self.max_seen_bytes.fetch_max(text.len(), Ordering::SeqCst);
+                assert!(
+                    text.len() <= DEFAULT_MAX_VECTOR_QUERY_BYTES,
+                    "embed_one received {} bytes (> {})",
+                    text.len(),
+                    DEFAULT_MAX_VECTOR_QUERY_BYTES
+                );
+                Ok(project_text_to_unit_vec(text))
+            }
+        }
+
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut store = MemoryStore::open_in_memory(LengthAssertingEmbedder {
+            max_seen_bytes: Arc::clone(&max_seen),
+        })
+        .expect("open store");
+
+        let e0 = block(
+            0,
+            1_000_000,
+            "Code.exe",
+            "vault.rs",
+            false,
+            "Türkçe şifreleme hatası RARE_4KB_SENTINEL_ERR99 çözüldü",
+        );
+        let e1 = block(
+            1,
+            1_005_000,
+            "notepad.exe",
+            "other.txt",
+            false,
+            "completely unrelated note",
+        );
+        store.ingest_batch(&[e0, e1]).expect("ingest");
+
+        // Empty / whitespace queries return empty without invoking embed_one.
+        let empty_out = store
+            .hybrid_search_detailed("   \n\t  ", 5, &HybridSearchConfig::default())
+            .expect("empty detailed search");
+        assert!(empty_out.hits.is_empty());
+        assert!(!empty_out.query_truncated);
+        assert!(!empty_out.semantic_used);
+        assert_eq!(max_seen.load(Ordering::SeqCst), 0);
+
+        // 4 KB+ Turkish-accented paste: vector input capped at <= DEFAULT_MAX_VECTOR_QUERY_BYTES,
+        // `query_truncated == true`, and BM25 still catches unique error code inside 4 KB!
+        let mut paste_4kb = String::from("güvenlik şifreleme doğrulama çözümü ");
+        while paste_4kb.len() < 3200 {
+            paste_4kb.push_str("tekrarlayan gürültü kelimesi ");
+        }
+        paste_4kb.push_str("RARE_4KB_SENTINEL_ERR99 ");
+        while paste_4kb.len() < 4200 {
+            paste_4kb.push_str("ekstra metin bloğu ");
+        }
+        assert!(paste_4kb.len() > 4096);
+
+        let outcome = store
+            .hybrid_search_detailed(&paste_4kb, 5, &HybridSearchConfig::default())
+            .expect("4kb detailed search");
+        assert!(outcome.query_truncated);
+        assert!(outcome.semantic_used);
+        assert!(max_seen.load(Ordering::SeqCst) <= DEFAULT_MAX_VECTOR_QUERY_BYTES);
+        assert!(max_seen.load(Ordering::SeqCst) > 0);
+        assert!(!outcome.hits.is_empty());
+        assert_eq!(outcome.hits[0].event_id, 0);
+    }
+
+    #[test]
+    fn managed_embedder_failure_and_downloading_degrade_to_bm25_and_backfill_on_ready() {
+        let managed = ManagedEmbedder::new();
+        let mut store = MemoryStore::open_in_memory(managed.clone()).expect("open store");
+
+        // 1. NotDownloaded: ingestion and search work via BM25 + causality without crashing.
+        let e0 = block(
+            0,
+            1_000_000,
+            "WindowsTerminal.exe",
+            "cargo build",
+            false,
+            "error: SQLCIPHER_LINK_404 symbol missing",
+        );
+        let e1 = block(
+            1,
+            1_010_000,
+            "brave.exe",
+            "Search link fix",
+            true,
+            "searching SQLCIPHER_LINK_404 workaround",
+        );
+        store
+            .ingest_batch(&[e0, e1])
+            .expect("ingest while NotDownloaded must succeed");
+
+        let pre_out = store
+            .hybrid_search_detailed("SQLCIPHER_LINK_404", 5, &HybridSearchConfig::default())
+            .expect("BM25 fallback search succeeds");
+        assert!(!pre_out.semantic_used);
+        assert_eq!(pre_out.hits.len(), 2);
+        assert!(!pre_out.hits[0].causality_chain.is_empty());
+
+        // 2. Failed initialization: ingestion and search STILL keep working on BM25.
+        let _ = managed.initialize_with(|progress| -> Result<DeterministicTestEmbedder> {
+            progress(0, Some(1024));
+            Err(CoreError::Embedder(
+                "offline during first launch".to_owned(),
+            ))
+        });
+        assert!(managed.status().is_failed());
+
+        store
+            .ingest_block(&block(
+                2,
+                1_020_000,
+                "Code.exe",
+                "main.rs",
+                false,
+                "applied offline BM25_SURVIVED_88 patch",
+            ))
+            .expect("single ingest while Failed must succeed");
+
+        let failed_out = store
+            .hybrid_search_detailed("BM25_SURVIVED_88", 5, &HybridSearchConfig::default())
+            .expect("search while Failed must succeed via BM25");
+        assert!(!failed_out.semantic_used);
+        assert_eq!(failed_out.hits.len(), 1);
+        assert_eq!(failed_out.hits[0].event_id, 2);
+
+        // No vectors exist yet while embedder was unavailable.
+        let vec_count_before: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM event_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vec_count_before, 0);
+
+        // 3. Recovery / Ready: backfill missing vectors and subsequent searches use vectors.
+        managed
+            .initialize_with(|_| Ok(DeterministicTestEmbedder))
+            .expect("recovery succeeds");
+        let backfilled = store
+            .backfill_missing_embeddings(16)
+            .expect("backfill succeeds");
+        assert_eq!(backfilled, 3);
+
+        let ready_out = store
+            .hybrid_search_detailed("SQLCIPHER_LINK_404", 5, &HybridSearchConfig::default())
+            .expect("hybrid search after Ready");
+        assert!(ready_out.semantic_used);
+        assert_eq!(ready_out.hits.len(), 2);
+    }
+
+    #[test]
+    fn sanitize_fts_query_prioritizes_informative_tokens_on_code_and_error_dumps_while_preserving_short_queries()
+     {
+        // Short queries within DEFAULT_MAX_BM25_TERMS (including 7-word Turkish queries) keep exact order.
+        let (short_fts, short_trunc) =
+            sanitize_fts_query_limited("c 1 db id", DEFAULT_MAX_BM25_TERMS)
+                .expect("short query with ids");
+        assert!(!short_trunc);
+        assert_eq!(short_fts, "\"c\" OR \"1\" OR \"db\" OR \"id\"");
+
+        // Error dumps starting with timestamps / PIDs prioritize informative error/symbol tokens
+        // both under default 8-term budget and the 4-term oversized-paste budget.
+        let dump = "[2026-11-21 15:04:09] #42 E0308 error SQLCIPHER_HMAC mismatch fn embed_one crates s_core embedder rs extra tail token";
+        let (dump_default_fts, dump_default_trunc) =
+            sanitize_fts_query_limited(dump, DEFAULT_MAX_BM25_TERMS).expect("error dump default");
+        assert!(dump_default_trunc);
+        assert_eq!(
+            dump_default_fts,
+            "\"E0308\" OR \"error\" OR \"SQLCIPHER_HMAC\" OR \"mismatch\" OR \"embed_one\" OR \"crates\" OR \"s_core\" OR \"embedder\""
+        );
+        let (dump_paste_fts, dump_paste_trunc) =
+            sanitize_fts_query_limited(dump, 4).expect("error dump paste tier");
+        assert!(dump_paste_trunc);
+        assert_eq!(
+            dump_paste_fts,
+            "\"E0308\" OR \"error\" OR \"SQLCIPHER_HMAC\" OR \"mismatch\""
+        );
+
+        // When fewer than max_terms informative tokens exist, secondary tokens backfill remaining slots.
+        let (mixed_fts, mixed_trunc) = sanitize_fts_query_limited("2026 11 E0308 id db 42", 4)
+            .expect("mixed informative + short query");
+        assert!(mixed_trunc);
+        assert_eq!(mixed_fts, "\"E0308\" OR \"2026\" OR \"11\" OR \"id\"");
+    }
+
+    #[test]
+    fn bm25_quality_preserves_turkish_and_code_error_dump_top1_under_default_limits() {
+        let mut store =
+            MemoryStore::open_in_memory(DeterministicTestEmbedder).expect("open in-memory store");
+
+        let mut events = Vec::new();
+        for i in 0..25_u64 {
+            events.push(block(
+                i,
+                1_000_000 + i * 1_000,
+                "svchost.exe",
+                "System Log",
+                false,
+                &format!(
+                    "2026-11-21 15:00:{:02} INFO worker thread heartbeat ok günlük özet kaydı olay_{i}",
+                    i % 60
+                ),
+            ));
+        }
+        events.push(block(
+            100,
+            1_050_000,
+            "WindowsTerminal.exe",
+            "SynapseMind Şifreleme Günlüğü",
+            false,
+            "Veritabanı şifreleme anahtarı DPAPI doğrulaması başarısız oldu; çalışma dizini yetkisi kontrol edilmeli.",
+        ));
+        events.push(block(
+            101,
+            1_051_000,
+            "Code.exe",
+            "vault_hmac.rs",
+            false,
+            "Şifreleme katmanında SQLCIPHER_PAGE_HMAC uyuşmazlığı tespit edildi, geçici önbellek temizlendi.",
+        ));
+        events.push(block(
+            102,
+            1_052_000,
+            "WindowsTerminal.exe",
+            "cargo check",
+            false,
+            "error[E0308]: mismatched types in crates/s-core/src/embedder.rs — expected ManagedEmbedder, found DualEmbedder",
+        ));
+        store.ingest_batch(&events).expect("ingest quality corpus");
+
+        let bm25_only = HybridSearchConfig {
+            bm25_weight: 1.0,
+            vector_weight: 0.0,
+            recency_weight: 0.0,
+            ..HybridSearchConfig::default()
+        };
+
+        // 1. Long (~2.4 KB) Turkish query with multi-byte characters and pasted boilerplate tail.
+        let tr_long = format!(
+            "Veritabanı şifreleme anahtarı DPAPI doğrulaması başarısız oldu. {}",
+            "ilgisiz günlük sistem pencere odak geçmişi satırı ".repeat(40)
+        );
+        assert!(tr_long.len() > DEFAULT_MAX_BM25_QUERY_BYTES);
+        let (tr_prefix, tr_byte_trunc) =
+            truncate_query_prefix(&tr_long, DEFAULT_MAX_BM25_QUERY_BYTES);
+        assert!(tr_byte_trunc);
+        assert!(tr_prefix.len() <= DEFAULT_MAX_BM25_QUERY_BYTES);
+        assert!(!tr_prefix.is_empty());
+
+        let tr_bm25 = store
+            .hybrid_search_detailed(&tr_long, 5, &bm25_only)
+            .expect("Turkish long BM25");
+        assert!(tr_bm25.query_truncated);
+        assert_eq!(tr_bm25.hits[0].event_id, 100);
+        let tr_hybrid = store
+            .hybrid_search_detailed(&tr_long, 5, &HybridSearchConfig::default())
+            .expect("Turkish long hybrid");
+        assert_eq!(tr_hybrid.hits[0].event_id, 100);
+
+        // 2. Turkish uppercase 'İ'/'Ş'/'Ü'/'Ç'/'Ğ' normalization parity in long diagnostic paste.
+        let tr_upper_long = format!(
+            "ŞİFRELEME KATMANINDA SQLCIPHER_PAGE_HMAC UYUŞMAZLIĞI TESPİT EDİLDİ {}",
+            "worker thread heartbeat info status frame pointer ".repeat(35)
+        );
+        let tr_upper_bm25 = store
+            .hybrid_search_detailed(&tr_upper_long, 5, &bm25_only)
+            .expect("Turkish uppercase long BM25");
+        assert!(tr_upper_bm25.query_truncated);
+        assert_eq!(tr_upper_bm25.hits[0].event_id, 101);
+
+        // 3. Long (~3 KB) compiler error dump preceded by timestamps/PID numbers.
+        let err_long = format!(
+            "[2026-11-21 15:04:09] #9842 error[E0308]: mismatched types in crates/s-core/src/embedder.rs — expected ManagedEmbedder {}",
+            "note: required by a bound in futures::task::Spawn at library/core/src/ops/function.rs:250 ".repeat(32)
+        );
+        assert!(err_long.len() > 2048);
+        let err_bm25 = store
+            .hybrid_search_detailed(&err_long, 5, &bm25_only)
+            .expect("code error dump long BM25");
+        assert!(err_bm25.query_truncated);
+        assert_eq!(err_bm25.hits[0].event_id, 102);
+        let err_hybrid = store
+            .hybrid_search_detailed(&err_long, 5, &HybridSearchConfig::default())
+            .expect("code error dump long hybrid");
+        assert_eq!(err_hybrid.hits[0].event_id, 102);
+
+        // 4. Pure multi-byte Turkish UTF-8 boundary truncation at DEFAULT_MAX_BM25_QUERY_BYTES never splits a code point.
+        let dense_tr = "ğüşöçıİĞÜŞÖÇ ".repeat(80);
+        let (cut, cut_trunc) = truncate_query_prefix(&dense_tr, DEFAULT_MAX_BM25_QUERY_BYTES);
+        assert!(cut_trunc);
+        assert!(cut.len() <= DEFAULT_MAX_BM25_QUERY_BYTES);
+        assert!(cut.is_char_boundary(cut.len()));
+    }
+
+    struct DistinctSemanticModelEmbedder {
+        id: &'static str,
+        batch_inputs: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl DistinctSemanticModelEmbedder {
+        fn new(id: &'static str) -> (Self, Arc<Mutex<Vec<usize>>>) {
+            let batch_inputs = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    id,
+                    batch_inputs: Arc::clone(&batch_inputs),
+                },
+                batch_inputs,
+            )
+        }
+
+        fn encode(&self, text: &str) -> Vec<f32> {
+            let mut vec = vec![0.0_f32; EMBEDDING_DIM];
+            let lower = text.to_ascii_lowercase();
+            // Intentionally orthogonal to DevHash token projections: semantic concepts map to
+            // dedicated orthogonal basis axes rather than surface lexical tokens.
+            if lower.contains("automobile") || lower.contains("mechanic") || lower.contains("car") {
+                vec[350] = 1.0;
+            } else if lower.contains("postgresql")
+                || lower.contains("deadlock")
+                || lower.contains("sql")
+            {
+                vec[351] = 1.0;
+            } else if lower.contains("sourdough") || lower.contains("bread") {
+                vec[352] = 1.0;
+            } else {
+                vec[353] = 1.0;
+            }
+            vec
+        }
+    }
+
+    impl Embedder for DistinctSemanticModelEmbedder {
+        fn model_id(&self) -> &str {
+            self.id
+        }
+
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            self.batch_inputs.lock().unwrap().push(texts.len());
+            Ok(texts.iter().map(|t| self.encode(t)).collect())
+        }
+
+        fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+            Ok(self.encode(text))
+        }
+    }
+
+    fn count_event_vectors<E: Embedder>(store: &MemoryStore<E>) -> i64 {
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM event_vectors", [], |r| r.get(0))
+            .expect("count event_vectors")
+    }
+
+    #[test]
+    fn model_id_migration_clears_devhash_vectors_and_backfills_in_chunks_on_encrypted_db() {
+        let key = [0x33_u8; 32];
+        let dir = TempDirGuard::new("migrate-devhash");
+
+        for legacy_missing_meta in [false, true] {
+            let db_path = dir.0.join(format!("vault_legacy_{legacy_missing_meta}.db"));
+
+            // 1. Populate encrypted store with DevHash (`devhash-v1`), including a causality edge
+            // and a non-embedding block that must remain excluded from `event_vectors`.
+            {
+                let mut store =
+                    MemoryStore::open_encrypted(&db_path, &key, DeterministicTestEmbedder)
+                        .expect("open encrypted store with devhash");
+                assert_eq!(
+                    store
+                        .stored_embedding_model_id()
+                        .expect("read meta")
+                        .as_deref(),
+                    Some(crate::embedder::MODEL_ID_DEVHASH)
+                );
+
+                let e0 = block(
+                    0,
+                    1_000_000,
+                    "WindowsTerminal.exe",
+                    "cargo test",
+                    false,
+                    "error: PostgreSQL deadlock transaction MIGRATION_SENTINEL_11",
+                );
+                let e1 = block(
+                    1,
+                    1_010_000,
+                    "brave.exe",
+                    "Search deadlock fix",
+                    true,
+                    "automobile mechanic brake pads MIGRATION_SENTINEL_11",
+                );
+                let e2 = block(
+                    2,
+                    1_020_000,
+                    "notes.exe",
+                    "bakery",
+                    false,
+                    "sourdough bread oven steam",
+                );
+                let mut e3_no_embed = block(3, 1_030_000, "Figma.exe", "canvas", false, "");
+                e3_no_embed.has_embedding_payload = false;
+                let e4 = block(
+                    4,
+                    1_040_000,
+                    "excel.exe",
+                    "sheet",
+                    false,
+                    "quarterly revenue dividend",
+                );
+                store
+                    .ingest_batch(&[e0, e1, e2, e3_no_embed, e4])
+                    .expect("ingest devhash batch");
+                assert_eq!(count_event_vectors(&store), 4);
+
+                if legacy_missing_meta {
+                    // Simulate a v0.1.0 DB created before `store_meta` existed.
+                    store
+                        .connection()
+                        .execute("DROP TABLE store_meta", [])
+                        .expect("drop store_meta to simulate v0.1.0");
+                }
+            }
+
+            // 2. Reopen with a different model_id (`bge-small-en-v1.5-fp32`):
+            // old vectors must be cleared immediately and metadata updated atomically.
+            let (model_b, batch_inputs) =
+                DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+            let mut reopened = MemoryStore::open_encrypted(&db_path, &key, model_b)
+                .expect("reopen encrypted store with new model");
+
+            assert_eq!(
+                reopened
+                    .stored_embedding_model_id()
+                    .expect("meta after migration")
+                    .as_deref(),
+                Some(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32)
+            );
+            assert_eq!(
+                count_event_vectors(&reopened),
+                0,
+                "stale DevHash vectors must be cleared on model mismatch"
+            );
+            assert_eq!(
+                reopened
+                    .pending_embedding_backfill_count()
+                    .expect("pending backfill count"),
+                4
+            );
+            assert!(
+                !reopened
+                    .reconcile_embedding_model()
+                    .expect("idempotent second reconcile"),
+                "second reconcile must be a no-op"
+            );
+
+            // Events, FTS5, and causality edges remain intact.
+            let bm25_hits = reopened
+                .hybrid_search("MIGRATION_SENTINEL_11", 5)
+                .expect("BM25 search before backfill");
+            assert_eq!(bm25_hits.len(), 2);
+            assert!(bm25_hits.iter().any(|h| {
+                h.causality_chain
+                    .iter()
+                    .any(|e| e.relationship == "searched_after_error")
+            }));
+
+            // 3. Chunked backfill regenerates all 4 embeddable vectors (never touching e3_no_embed).
+            assert_eq!(reopened.backfill_missing_embeddings(2).expect("chunk 1"), 2);
+            assert_eq!(
+                reopened
+                    .pending_embedding_backfill_count()
+                    .expect("pending"),
+                2
+            );
+            assert_eq!(reopened.backfill_missing_embeddings(2).expect("chunk 2"), 2);
+            assert_eq!(
+                reopened
+                    .pending_embedding_backfill_count()
+                    .expect("pending"),
+                0
+            );
+            assert_eq!(reopened.backfill_missing_embeddings(2).expect("chunk 3"), 0);
+            assert_eq!(count_event_vectors(&reopened), 4);
+            assert_eq!(*batch_inputs.lock().unwrap(), vec![2, 2]);
+
+            // 4. Vector-only search now ranks using the new model's vector space.
+            let vector_only = HybridSearchConfig {
+                bm25_weight: 0.0,
+                vector_weight: 1.0,
+                recency_weight: 0.0,
+                ..HybridSearchConfig::default()
+            };
+            let car_hits = reopened
+                .hybrid_search_with_config("car repair", 4, &vector_only)
+                .expect("vector search car");
+            assert_eq!(car_hits[0].event_id, 1);
+            let sql_hits = reopened
+                .hybrid_search_with_config("sql lock", 4, &vector_only)
+                .expect("vector search sql");
+            assert_eq!(sql_hits[0].event_id, 0);
+
+            drop(reopened);
+
+            // 5. Iron Rule 7 check: disk bytes must remain encrypted with zero plaintext leaks.
+            let raw_bytes = std::fs::read(&db_path).expect("read encrypted bytes");
+            assert!(!raw_bytes.starts_with(b"SQLite format 3\0"));
+            assert!(!contains_subslice(&raw_bytes, b"MIGRATION_SENTINEL_11"));
+            assert!(!contains_subslice(&raw_bytes, b"bge-small-en-v1.5-fp32"));
+        }
+    }
+
+    #[test]
+    fn same_model_id_reopen_keeps_existing_vectors_and_skips_backfill() {
+        let dir = TempDirGuard::new("same-model");
+        let db_path = dir.0.join("same.db");
+        let key = [0x44_u8; 32];
+
+        {
+            let mut store = MemoryStore::open_encrypted(&db_path, &key, DeterministicTestEmbedder)
+                .expect("open initial store");
+            store
+                .ingest_batch(&[
+                    block(
+                        0,
+                        1_000,
+                        "Code.exe",
+                        "a.rs",
+                        false,
+                        "rust vector preserved alpha",
+                    ),
+                    block(
+                        1,
+                        2_000,
+                        "Code.exe",
+                        "b.rs",
+                        false,
+                        "rust vector preserved beta",
+                    ),
+                    block(
+                        2,
+                        3_000,
+                        "Code.exe",
+                        "c.rs",
+                        false,
+                        "unrelated garden notes",
+                    ),
+                ])
+                .expect("ingest initial blocks");
+            assert_eq!(count_event_vectors(&store), 3);
+        }
+
+        let (spy, batch_inputs) =
+            DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_DEVHASH);
+        let mut reopened =
+            MemoryStore::open_encrypted(&db_path, &key, spy).expect("reopen with same model_id");
+        assert_eq!(
+            reopened
+                .stored_embedding_model_id()
+                .expect("meta")
+                .as_deref(),
+            Some(crate::embedder::MODEL_ID_DEVHASH)
+        );
+        assert_eq!(count_event_vectors(&reopened), 3);
+        assert_eq!(
+            reopened
+                .pending_embedding_backfill_count()
+                .expect("pending"),
+            0
+        );
+        assert!(!reopened.reconcile_embedding_model().expect("reconcile"));
+        assert_eq!(
+            reopened
+                .backfill_missing_embeddings(128)
+                .expect("backfill no-op"),
+            0
+        );
+        assert!(
+            batch_inputs.lock().unwrap().is_empty(),
+            "same model_id must never delete or re-embed existing vectors"
+        );
+    }
+
+    #[test]
+    fn empty_db_and_unready_bm25_fallback_never_write_model_id_until_ready() {
+        let dir = TempDirGuard::new("empty-and-unready");
+        let key = [0x55_u8; 32];
+
+        // A. Empty encrypted DB opened with unready ManagedEmbedder must not record model_id.
+        let unready_db = dir.0.join("empty_unready.db");
+        let managed = ManagedEmbedder::new();
+        {
+            let mut store = MemoryStore::open_encrypted(&unready_db, &key, managed.clone())
+                .expect("open empty encrypted store with unready embedder");
+            assert_eq!(store.stored_embedding_model_id().expect("meta"), None);
+            assert!(
+                !store
+                    .reconcile_embedding_model()
+                    .expect("reconcile while NotDownloaded")
+            );
+            assert_eq!(
+                store
+                    .backfill_missing_embeddings(128)
+                    .expect("backfill while NotDownloaded"),
+                0
+            );
+            assert_eq!(
+                store.stored_embedding_model_id().expect("meta still none"),
+                None
+            );
+
+            // Ingestion in BM25 fallback must also leave `embedding_model_id` unset.
+            store
+                .ingest_block(&block(
+                    0,
+                    1_000,
+                    "Code.exe",
+                    "main.rs",
+                    false,
+                    "UNREADY_BM25_FALLBACK_TOKEN",
+                ))
+                .expect("ingest while NotDownloaded");
+            assert_eq!(
+                store.stored_embedding_model_id().expect("meta still none"),
+                None
+            );
+            assert_eq!(count_event_vectors(&store), 0);
+            assert_eq!(
+                store.pending_embedding_backfill_count().expect("pending"),
+                1
+            );
+
+            // Failed download keeps BM25 working and still writes no model_id.
+            assert!(
+                managed
+                    .initialize_with(|_| -> Result<DeterministicTestEmbedder> {
+                        Err(CoreError::Embedder("offline".to_owned()))
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                store.stored_embedding_model_id().expect("meta after fail"),
+                None
+            );
+
+            // Once model becomes Ready, backfill writes model_id and populates vectors.
+            let (model_b, _) =
+                DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+            managed
+                .initialize_with(|_| Ok(model_b))
+                .expect("recover to Ready");
+            assert_eq!(store.backfill_missing_embeddings(128).expect("backfill"), 1);
+            assert_eq!(
+                store
+                    .stored_embedding_model_id()
+                    .expect("meta after ready")
+                    .as_deref(),
+                Some(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32)
+            );
+            assert_eq!(count_event_vectors(&store), 1);
+        }
+
+        // B. Empty encrypted DB opened with an already-ready embedder records model_id cleanly.
+        let ready_empty_db = dir.0.join("empty_ready.db");
+        let mut empty_ready_store =
+            MemoryStore::open_encrypted(&ready_empty_db, &key, DeterministicTestEmbedder)
+                .expect("open empty DB with ready embedder");
+        assert_eq!(
+            empty_ready_store
+                .stored_embedding_model_id()
+                .expect("meta on ready empty DB")
+                .as_deref(),
+            Some(crate::embedder::MODEL_ID_DEVHASH)
+        );
+        assert_eq!(count_event_vectors(&empty_ready_store), 0);
+        assert_eq!(
+            empty_ready_store
+                .pending_embedding_backfill_count()
+                .expect("pending"),
+            0
+        );
+        assert!(
+            !empty_ready_store
+                .reconcile_embedding_model()
+                .expect("reconcile")
+        );
+        assert_eq!(
+            empty_ready_store
+                .backfill_missing_embeddings(128)
+                .expect("backfill"),
+            0
+        );
+
+        // C. Existing v0.1.0 DB opened with unready ManagedEmbedder preserves old vectors until Ready,
+        // never mixes vector spaces in search even in the window between Ready and backfill.
+        let legacy_db = dir.0.join("legacy_race.db");
+        {
+            let mut seed = MemoryStore::open_encrypted(&legacy_db, &key, DeterministicTestEmbedder)
+                .expect("seed legacy");
+            seed.ingest_batch(&[
+                block(0, 1_000, "Code.exe", "a.rs", false, "RACE_GUARD_ALPHA car"),
+                block(1, 2_000, "Code.exe", "b.rs", false, "RACE_GUARD_BETA sql"),
+            ])
+            .expect("ingest seed");
+            seed.connection()
+                .execute(
+                    "DELETE FROM store_meta WHERE key = ?1",
+                    [EMBEDDING_MODEL_META_KEY],
+                )
+                .expect("remove model meta");
+        }
+
+        let lazy = ManagedEmbedder::new();
+        let mut store = MemoryStore::open_encrypted(&legacy_db, &key, lazy.clone())
+            .expect("open legacy with unready ManagedEmbedder");
+        assert_eq!(store.stored_embedding_model_id().expect("meta"), None);
+        assert_eq!(count_event_vectors(&store), 2);
+        let pre_ready = store
+            .hybrid_search_detailed("RACE_GUARD_ALPHA", 5, &HybridSearchConfig::default())
+            .expect("BM25 works while unready");
+        assert!(!pre_ready.semantic_used);
+        assert_eq!(pre_ready.hits.len(), 1);
+
+        let (model_b, _) =
+            DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+        lazy.initialize_with(|_| Ok(model_b)).expect("become ready");
+
+        // Even before `backfill_missing_embeddings` runs, search must NOT query mismatched vectors.
+        let pre_reconcile = store
+            .hybrid_search_detailed("RACE_GUARD_ALPHA", 5, &HybridSearchConfig::default())
+            .expect("BM25 fallback on mismatched vectors");
+        assert!(!pre_reconcile.semantic_used);
+        assert_eq!(pre_reconcile.hits.len(), 1);
+
+        assert_eq!(store.backfill_missing_embeddings(128).expect("backfill"), 2);
+        let post_backfill = store
+            .hybrid_search_detailed("RACE_GUARD_ALPHA", 5, &HybridSearchConfig::default())
+            .expect("semantic active after backfill");
+        assert!(post_backfill.semantic_used);
+        assert_eq!(post_backfill.hits[0].event_id, 0);
+    }
+
+    #[test]
+    fn interrupted_migration_and_concurrent_ingest_are_idempotent_and_resumable() {
+        let dir = TempDirGuard::new("resume");
+        let db_path = dir.0.join("resume.db");
+        let key = [0x66_u8; 32];
+
+        {
+            let mut seed = MemoryStore::open_encrypted(&db_path, &key, DeterministicTestEmbedder)
+                .expect("seed encrypted DB");
+            let blocks: Vec<MaskedMemoryBlock> = (0..5_u64)
+                .map(|i| {
+                    block(
+                        i,
+                        1_000 + i * 1_000,
+                        "Code.exe",
+                        "main.rs",
+                        false,
+                        &format!("sourdough bread event {i}"),
+                    )
+                })
+                .collect();
+            seed.ingest_batch(&blocks).expect("ingest 5 blocks");
+            assert_eq!(count_event_vectors(&seed), 5);
+        }
+
+        // Open with new model, backfill only 2 out of 5, then close (simulating crash/exit).
+        {
+            let (model_b, _) =
+                DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+            let mut partial =
+                MemoryStore::open_encrypted(&db_path, &key, model_b).expect("open with new model");
+            assert_eq!(count_event_vectors(&partial), 0);
+            assert_eq!(
+                partial.backfill_missing_embeddings(2).expect("partial 2"),
+                2
+            );
+            assert_eq!(count_event_vectors(&partial), 2);
+            assert_eq!(
+                partial.pending_embedding_backfill_count().expect("pending"),
+                3
+            );
+        }
+
+        // Reopen with same new model: keeps the 2 completed vectors and backfills only the 3 left.
+        {
+            let (spy_b, batch_inputs) =
+                DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+            let mut resumed =
+                MemoryStore::open_encrypted(&db_path, &key, spy_b).expect("reopen resumed");
+            assert_eq!(count_event_vectors(&resumed), 2);
+            assert_eq!(
+                resumed.pending_embedding_backfill_count().expect("pending"),
+                3
+            );
+            assert!(
+                !resumed
+                    .reconcile_embedding_model()
+                    .expect("no-op reconcile")
+            );
+
+            assert_eq!(resumed.backfill_missing_embeddings(2).expect("resume 2"), 2);
+            assert_eq!(resumed.backfill_missing_embeddings(2).expect("resume 1"), 1);
+            assert_eq!(
+                resumed.backfill_missing_embeddings(2).expect("resume done"),
+                0
+            );
+            assert_eq!(count_event_vectors(&resumed), 5);
+            assert_eq!(*batch_inputs.lock().unwrap(), vec![2, 1]);
+        }
+
+        // Uncommitted transaction rollback leaves both `event_vectors` and `store_meta` untouched.
+        {
+            let (model_b, _) =
+                DistinctSemanticModelEmbedder::new(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32);
+            let mut store = MemoryStore::open_encrypted(&db_path, &key, model_b)
+                .expect("reopen for rollback check");
+            {
+                let tx = store.conn.transaction().expect("begin tx");
+                assert!(
+                    reconcile_embedding_model_in_tx(&tx, "transient-rolled-back-id")
+                        .expect("in-tx reconcile")
+                );
+                // Drop `tx` without commit -> SQLite rolls back both DELETE and store_meta update.
+            }
+            assert_eq!(
+                store
+                    .stored_embedding_model_id()
+                    .expect("meta after rollback")
+                    .as_deref(),
+                Some(crate::embedder::MODEL_ID_BGE_SMALL_EN_V15_FP32)
+            );
+            assert_eq!(count_event_vectors(&store), 5);
+        }
+
+        // Concurrent live `ingest_block` right after `ManagedEmbedder` reaches `Ready`
+        // (before `backfill_missing_embeddings` runs) must clear old vectors atomically first.
+        {
+            let lazy = ManagedEmbedder::new();
+            let mut store =
+                MemoryStore::open_encrypted(&db_path, &key, lazy.clone()).expect("open lazy");
+            assert_eq!(count_event_vectors(&store), 5);
+
+            let (model_c, _) = DistinctSemanticModelEmbedder::new("mock-v3");
+            lazy.initialize_with(|_| Ok(model_c))
+                .expect("ready model_c");
+
+            let next_id = store.next_event_id().expect("next_id");
+            store
+                .ingest_block(&block(
+                    next_id,
+                    99_000,
+                    "Code.exe",
+                    "live.rs",
+                    false,
+                    "live ingest after Ready",
+                ))
+                .expect("live ingest reconciles atomically");
+            assert_eq!(
+                store
+                    .stored_embedding_model_id()
+                    .expect("meta after live ingest")
+                    .as_deref(),
+                Some("mock-v3")
+            );
+            assert_eq!(
+                count_event_vectors(&store),
+                1,
+                "stale vectors must be cleared so only the new model's vector remains"
+            );
+            assert_eq!(
+                store.pending_embedding_backfill_count().expect("pending"),
+                5
+            );
+            assert_eq!(store.backfill_missing_embeddings(128).expect("backfill"), 5);
+            assert_eq!(count_event_vectors(&store), 6);
+        }
     }
 }

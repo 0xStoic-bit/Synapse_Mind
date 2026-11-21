@@ -122,6 +122,32 @@
           <button id="notice-resume-btn" type="button" class="btn btn-outline btn-sm hidden">Şimdi devam et</button>
         </div>
 
+        <div id="embedder-banner" class="alert-banner embedder-banner hidden" role="status" aria-live="polite">
+          <div class="alert-body">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M12 4v11m0 0l-4-4m4 4l4-4" stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M5 18.5h14" stroke-linecap="round"></path>
+            </svg>
+            <div class="embedder-copy">
+              <p id="embedder-message" class="alert-text"></p>
+              <p id="embedder-subtext" class="embedder-subtext"></p>
+            </div>
+          </div>
+          <div class="embedder-aside">
+            <div
+              id="embedder-progress-track"
+              class="embedder-progress-track hidden"
+              role="progressbar"
+              aria-label="Embedding modeli indirme ilerlemesi"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <div id="embedder-progress-fill" class="embedder-progress-fill"></div>
+            </div>
+            <button id="embedder-retry-btn" type="button" class="btn btn-outline btn-sm hidden">Yeniden dene</button>
+          </div>
+        </div>
+
         <section id="loading-skeleton" class="skeleton-grid" aria-label="Veriler yükleniyor">
           <div class="skeleton-strip"></div>
           <div class="skeleton-row">
@@ -312,6 +338,27 @@
                 <h2 id="h-sistem">Sistem</h2>
               </div>
               <div id="system-list" class="kv-list"></div>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span id="autostart-label" class="setting-title">Windows açılışında başlat</span>
+                  <span id="autostart-hint" class="setting-hint">Oturum açıldığında tepside sessizce başlar (varsayılan kapalı)</span>
+                </div>
+                <button
+                  id="autostart-toggle-btn"
+                  type="button"
+                  class="fluent-switch"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="autostart-label"
+                  aria-describedby="autostart-hint"
+                >
+                  <span class="fluent-switch-track" aria-hidden="true">
+                    <span class="fluent-switch-thumb"></span>
+                  </span>
+                  <span id="autostart-state-text" class="fluent-switch-text">Kapalı</span>
+                </button>
+              </div>
+              <p id="autostart-feedback" class="control-feedback hidden" role="status"></p>
             </section>
           </div>
         </div>

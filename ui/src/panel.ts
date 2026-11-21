@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { HitDto } from "./main";
+import type { EmbedderStatusDto, HitDto } from "./main";
 
 interface SensorStatusDto {
   state: "active" | "batching" | "suspended" | "unavailable";
@@ -46,6 +46,8 @@ interface MemoryPanelDto {
   last_search_ms: number | null;
   app_memory_bytes: number | null;
   embedder_label: string;
+  embedder_status: EmbedderStatusDto;
+  autostart_enabled: boolean;
   is_demo: boolean;
   version: string;
 }
@@ -77,6 +79,12 @@ const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const noticeBannerEl = document.getElementById("notice-banner") as HTMLElement;
 const noticeMessageEl = document.getElementById("notice-message") as HTMLElement;
 const noticeResumeBtn = document.getElementById("notice-resume-btn") as HTMLButtonElement;
+const embedderBannerEl = document.getElementById("embedder-banner") as HTMLElement;
+const embedderMessageEl = document.getElementById("embedder-message") as HTMLElement;
+const embedderSubtextEl = document.getElementById("embedder-subtext") as HTMLElement;
+const embedderProgressTrackEl = document.getElementById("embedder-progress-track") as HTMLElement;
+const embedderProgressFillEl = document.getElementById("embedder-progress-fill") as HTMLElement;
+const embedderRetryBtn = document.getElementById("embedder-retry-btn") as HTMLButtonElement;
 
 const heroEventsEl = document.getElementById("hero-events") as HTMLElement;
 const heroSummaryEl = document.getElementById("hero-summary") as HTMLElement;
@@ -125,6 +133,9 @@ const deleteAllConfirmEl = document.getElementById("delete-all-confirm") as HTML
 const deleteAllConfirmBtn = document.getElementById("delete-all-confirm-btn") as HTMLButtonElement;
 const deleteAllCancelBtn = document.getElementById("delete-all-cancel-btn") as HTMLButtonElement;
 const controlFeedbackEl = document.getElementById("control-feedback") as HTMLElement;
+const autostartToggleBtn = document.getElementById("autostart-toggle-btn") as HTMLButtonElement;
+const autostartStateTextEl = document.getElementById("autostart-state-text") as HTMLElement;
+const autostartFeedbackEl = document.getElementById("autostart-feedback") as HTMLElement;
 
 const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".nav-item[data-view]"));
 const viewSections = Array.from(document.querySelectorAll<HTMLElement>("[data-views]"));
@@ -132,6 +143,7 @@ const viewSections = Array.from(document.querySelectorAll<HTMLElement>("[data-vi
 let latestChainHit: HitDto | null = null;
 let chainExpanded = false;
 let isSensorPaused = false;
+let isAutostartEnabled = false;
 let activeView: ViewId = "overview";
 let loadedOnce = false;
 
@@ -749,6 +761,58 @@ function renderSystem(data: MemoryPanelDto): void {
   systemListEl.appendChild(frag);
 }
 
+function renderAutostart(enabled: boolean): void {
+  isAutostartEnabled = enabled;
+  autostartToggleBtn.setAttribute("aria-checked", String(enabled));
+  autostartStateTextEl.textContent = enabled ? "Açık" : "Kapalı";
+}
+
+function renderEmbedderStatus(status: EmbedderStatusDto): void {
+  if (status.state === "ready") {
+    embedderBannerEl.classList.add("hidden");
+    embedderBannerEl.removeAttribute("data-state");
+    embedderRetryBtn.classList.add("hidden");
+    return;
+  }
+
+  embedderBannerEl.classList.remove("hidden");
+  embedderBannerEl.setAttribute("data-state", status.state);
+
+  if (status.state === "failed") {
+    embedderMessageEl.textContent =
+      status.message ?? "Anlamsal arama kapalı, kelime araması çalışıyor";
+    embedderSubtextEl.textContent = "BM25 tam metin ve nedensellik araması normal şekilde çalışır.";
+    embedderProgressTrackEl.classList.add("hidden");
+    embedderProgressTrackEl.classList.remove("indeterminate");
+    embedderProgressTrackEl.removeAttribute("aria-valuenow");
+    embedderRetryBtn.classList.remove("hidden");
+    embedderRetryBtn.disabled = false;
+    return;
+  }
+
+  embedderRetryBtn.classList.add("hidden");
+  embedderProgressTrackEl.classList.remove("hidden");
+  embedderMessageEl.textContent =
+    status.state === "downloading"
+      ? "Anlamsal arama modeli indiriliyor…"
+      : "Anlamsal arama modeli hazırlanıyor…";
+
+  if (status.progress_pct !== null && status.total !== null) {
+    const clamped = Math.max(0, Math.min(100, status.progress_pct));
+    embedderProgressTrackEl.classList.remove("indeterminate");
+    embedderProgressTrackEl.setAttribute("aria-valuenow", String(clamped));
+    embedderProgressFillEl.style.width = `${clamped}%`;
+    const downloaded = formatBytes(status.bytes ?? 0);
+    const total = formatBytes(status.total);
+    embedderSubtextEl.textContent = `%${clamped} (${downloaded} / ${total}) · kelime araması bu sırada kullanılabilir`;
+  } else {
+    embedderProgressTrackEl.classList.add("indeterminate");
+    embedderProgressTrackEl.removeAttribute("aria-valuenow");
+    embedderProgressFillEl.style.width = "";
+    embedderSubtextEl.textContent = "İlk kurulum dosyaları indiriliyor · kelime araması bu sırada kullanılabilir";
+  }
+}
+
 function renderPanel(data: MemoryPanelDto): void {
   loadedOnce = true;
   workspaceEl.setAttribute("aria-busy", "false");
@@ -764,6 +828,7 @@ function renderPanel(data: MemoryPanelDto): void {
   todayDateEl.textContent = `Bugün, ${formattedDay}`;
   demoPillEl.classList.toggle("hidden", !data.is_demo);
 
+  renderEmbedderStatus(data.embedder_status);
   renderSensorState(data.sensor);
   renderHero(data);
   renderChain(data.latest_chain);
@@ -772,10 +837,37 @@ function renderPanel(data: MemoryPanelDto): void {
   renderPrivacy(data);
   renderBlocklist(data.user_blocklist);
   renderSystem(data);
+  renderAutostart(data.autostart_enabled);
   applyView(activeView);
 }
 
-function buildDevPreviewFixture(mode: string): MemoryPanelDto {
+function buildDevPreviewFixture(mode: string, embedMode: string | null): MemoryPanelDto {
+  const readyEmbed: EmbedderStatusDto = {
+    state: "ready",
+    bytes: null,
+    total: null,
+    progress_pct: 100,
+    message: null,
+  };
+  const previewEmbed: EmbedderStatusDto =
+    embedMode === "downloading" || mode === "downloading"
+      ? {
+          state: "downloading",
+          bytes: 41_600_000,
+          total: 67_100_000,
+          progress_pct: 62,
+          message: null,
+        }
+      : embedMode === "failed" || mode === "embed-error"
+        ? {
+            state: "failed",
+            bytes: null,
+            total: null,
+            progress_pct: null,
+            message: "Anlamsal arama kapalı, kelime araması çalışıyor",
+          }
+        : readyEmbed;
+
   const now = Date.now();
   if (mode === "empty") {
     return {
@@ -808,6 +900,8 @@ function buildDevPreviewFixture(mode: string): MemoryPanelDto {
       last_search_ms: null,
       app_memory_bytes: 36_850_000,
       embedder_label: "bge-small-en-v1.5 (FP32+INT8) · yerel",
+      embedder_status: previewEmbed,
+      autostart_enabled: false,
       is_demo: true,
       version: "0.1.0",
     };
@@ -890,6 +984,8 @@ function buildDevPreviewFixture(mode: string): MemoryPanelDto {
     last_search_ms: 14.2,
     app_memory_bytes: 36_850_000,
     embedder_label: "bge-small-en-v1.5 (FP32+INT8) · yerel",
+    embedder_status: previewEmbed,
+    autostart_enabled: false,
     is_demo: true,
     version: "0.1.0",
   };
@@ -900,14 +996,16 @@ async function refreshPanel(): Promise<void> {
     const tauriPresent =
       typeof (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !==
       "undefined";
-    const previewMode = new URLSearchParams(window.location.search).get("preview");
+    const params = new URLSearchParams(window.location.search);
+    const previewMode = params.get("preview");
+    const embedPreview = params.get("embed");
     if (!tauriPresent && previewMode) {
       if (previewMode === "dark") {
         setTheme(true);
-      } else if (previewMode === "light" || previewMode === "paused" || previewMode === "empty") {
+      } else {
         setTheme(false);
       }
-      renderPanel(buildDevPreviewFixture(previewMode));
+      renderPanel(buildDevPreviewFixture(previewMode, embedPreview));
       return;
     }
   }
@@ -993,6 +1091,33 @@ async function deleteAll(): Promise<void> {
     await refreshPanel();
   } catch (err) {
     showFeedback(`Hafıza silinemedi: ${String(err)}`);
+  }
+}
+
+async function toggleAutostart(): Promise<void> {
+  const next = !isAutostartEnabled;
+  if (isDevBrowserPreview()) {
+    renderAutostart(next);
+    autostartFeedbackEl.textContent = next
+      ? "Windows açılışında başlatma açıldı."
+      : "Windows açılışında başlatma kapatıldı.";
+    autostartFeedbackEl.classList.remove("hidden");
+    return;
+  }
+
+  autostartToggleBtn.disabled = true;
+  try {
+    const actual = await invoke<boolean>("set_autostart", { enabled: next });
+    renderAutostart(actual);
+    autostartFeedbackEl.textContent = actual
+      ? "Windows açılışında başlatma açıldı."
+      : "Windows açılışında başlatma kapatıldı.";
+    autostartFeedbackEl.classList.remove("hidden");
+  } catch (err) {
+    autostartFeedbackEl.textContent = `Başlangıç ayarı güncellenemedi: ${String(err)}`;
+    autostartFeedbackEl.classList.remove("hidden");
+  } finally {
+    autostartToggleBtn.disabled = false;
   }
 }
 
@@ -1085,6 +1210,10 @@ deleteAllConfirmBtn.addEventListener("click", () => {
   void deleteAll();
 });
 
+autostartToggleBtn.addEventListener("click", () => {
+  void toggleAutostart();
+});
+
 openChainBtn.addEventListener("click", () => {
   if (!latestChainHit) {
     return;
@@ -1119,6 +1248,29 @@ searchSimilarBtn.addEventListener("click", () => {
   void invoke("open_overlay_with_query", { query: seed });
 });
 
+embedderRetryBtn.addEventListener("click", () => {
+  if (isDevBrowserPreview()) {
+    renderEmbedderStatus({
+      state: "downloading",
+      bytes: 18_500_000,
+      total: 67_100_000,
+      progress_pct: 28,
+      message: null,
+    });
+    return;
+  }
+  embedderRetryBtn.disabled = true;
+  void (async () => {
+    try {
+      const next = await invoke<EmbedderStatusDto>("retry_embedder_download");
+      renderEmbedderStatus(next);
+    } catch (err) {
+      showFeedback(`Model indirilemedi: ${String(err)}`);
+      embedderRetryBtn.disabled = false;
+    }
+  })();
+});
+
 async function bootstrapPanel(): Promise<void> {
   const media =
     typeof window.matchMedia === "function"
@@ -1134,12 +1286,34 @@ async function bootstrapPanel(): Promise<void> {
     }
   });
 
+  if (import.meta.env.DEV) {
+    const viewParam = new URLSearchParams(window.location.search).get("view") as ViewId | null;
+    if (
+      viewParam === "overview" ||
+      viewParam === "activity" ||
+      viewParam === "privacy" ||
+      viewParam === "controls"
+    ) {
+      applyView(viewParam);
+    }
+  }
+
   await refreshPanel();
 
   try {
+    await listen<EmbedderStatusDto>("embedder://status", (event) => {
+      renderEmbedderStatus(event.payload);
+    });
     await listen("panel://refresh", () => {
       void refreshPanel();
     });
+  } catch {
+    // Ignore outside Tauri runtime.
+  }
+
+  try {
+    const currentEmbed = await invoke<EmbedderStatusDto>("get_embedder_status");
+    renderEmbedderStatus(currentEmbed);
   } catch {
     // Ignore outside Tauri runtime.
   }

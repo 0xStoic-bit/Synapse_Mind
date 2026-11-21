@@ -3651,9 +3651,10 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "s-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fastembed",
+ "hf-hub",
  "rusqlite",
  "s-types",
  "sqlite-vec",
@@ -3663,7 +3664,7 @@ dependencies = [
 
 [[package]]
 name = "s-guard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom 0.3.4",
  "regex",
@@ -3677,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "s-sensor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "s-types",
  "tokio",
@@ -3687,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "s-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zeroize",
 ]
@@ -4316,7 +4317,7 @@ dependencies = [
 
 [[package]]
 name = "synapse-mind"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "s-core",
  "s-guard",

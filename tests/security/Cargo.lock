@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "s-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusqlite",
  "s-types",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "s-guard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom",
  "regex",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "s-redteam"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "s-guard",
  "s-types",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "s-sensor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "s-types",
  "tokio",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "s-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zeroize",
 ]

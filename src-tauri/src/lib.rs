@@ -1,3 +1,7 @@
+pub mod autostart;
+pub mod embedder_ui;
+#[cfg(feature = "gate2-hooks")]
+pub mod gate2_hooks;
 pub mod keystore;
 pub mod singleton;
 pub mod tray;
@@ -7,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use s_core::{CausalityEdge, CausalityQueryHit, MemoryStats, MemoryStore};
+use s_core::{
+    CausalityEdge, CausalityQueryHit, EmbedderStatus, HybridSearchConfig, ManagedEmbedder,
+    MemoryStats, MemoryStore,
+};
 #[cfg(not(feature = "fastembed"))]
 use s_core::{EMBEDDING_DIM, Embedder};
 use s_guard::{DbKey, DropReason, GuardStats, UserBlocklist};
@@ -17,13 +24,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-/// Embedder selected at compile time (`DualEmbedder` — FP32 queries + INT8 batch ingest —
-/// when `fastembed` feature is active, otherwise deterministic token-projection embedder
-/// for offline dev builds).
-#[cfg(feature = "fastembed")]
-pub type AppEmbedder = s_core::DualEmbedder;
-#[cfg(not(feature = "fastembed"))]
-pub type AppEmbedder = DevHashEmbedder;
+/// Embedder wrapper shared between `MemoryStore` and Tauri background tasks (`ManagedEmbedder`).
+pub type AppEmbedder = ManagedEmbedder;
 
 /// Shared in-memory store managed by Tauri state.
 pub type SharedMemoryStore = Arc<Mutex<MemoryStore<AppEmbedder>>>;
@@ -136,6 +138,8 @@ pub struct MemoryPanelDto {
     pub last_search_ms: Option<f64>,
     pub app_memory_bytes: Option<u64>,
     pub embedder_label: String,
+    pub embedder_status: embedder_ui::EmbedderStatusDto,
+    pub autostart_enabled: bool,
     pub is_demo: bool,
     pub version: String,
 }
@@ -170,6 +174,10 @@ pub struct DevHashEmbedder;
 
 #[cfg(not(feature = "fastembed"))]
 impl Embedder for DevHashEmbedder {
+    fn model_id(&self) -> &str {
+        s_core::MODEL_ID_DEVHASH
+    }
+
     fn embed_batch(&self, texts: &[&str]) -> s_core::Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|t| project_tokens_to_unit(t)).collect())
     }
@@ -208,24 +216,78 @@ fn project_tokens_to_unit(text: &str) -> Vec<f32> {
     vec
 }
 
+/// Uygulama gömücü yapılandırması (kullanıcı kararı, 21.11.2026; benchmark.md v0.1.1-b):
+/// tek FP32 oturum (`SingleFp32`, sorgu ve indeksleme aynı vektör uzayında),
+/// ONNX Runtime CPU bellek arenası kapalı ve 10 dk boşta kalınca oturum boşaltma.
+/// Hedef: boşta < 50 MB, aktifken ~200 MB altı, sorgu gömme p95 < 20 ms.
+#[cfg(feature = "fastembed")]
+fn app_fastembed_config() -> s_core::FastEmbedConfig {
+    s_core::FastEmbedConfig {
+        mode: s_core::FastEmbedMode::SingleFp32,
+        session_config: vec![("session.enable_cpu_mem_arena".into(), "0".into())],
+        ..s_core::FastEmbedConfig::default()
+    }
+}
+
+/// Model boşta boşaltıldığında (`idle_unload`) serbest kalan sayfaları Windows'a hemen iade eder.
+/// Yalnızca çalışma kümesini kırpar (`SetProcessWorkingSetSize(-1, -1)`); gereken sayfalar
+/// talep edildiğinde geri gelir, davranış değişmez. Ölçüm (21.11.2026): boşaltma sonrası
+/// WS 64 MB / Private 30 MB; kırpma, WS'yi "boşta < 50 MB" hedefine indirmek içindir.
+#[cfg(all(windows, feature = "fastembed"))]
+fn spawn_working_set_trimmer(embedder: ManagedEmbedder) {
+    let _ = std::thread::Builder::new()
+        .name("synapse-ws-trimmer".to_owned())
+        .spawn(move || {
+            let mut was_loaded = embedder.is_loaded();
+            loop {
+                std::thread::sleep(Duration::from_secs(15));
+                let loaded = embedder.is_loaded();
+                if was_loaded && !loaded {
+                    // SAFETY: GetCurrentProcess döndürdüğü sözde tutamaç kapatılmaz; (-1, -1)
+                    // belgelenmiş "çalışma kümesini boşalt" çağrısıdır.
+                    unsafe {
+                        let _ = windows::Win32::System::Threading::SetProcessWorkingSetSize(
+                            windows::Win32::System::Threading::GetCurrentProcess(),
+                            usize::MAX,
+                            usize::MAX,
+                        );
+                    }
+                }
+                was_loaded = loaded;
+            }
+        });
+}
+
 fn build_embedder() -> s_core::Result<AppEmbedder> {
     #[cfg(feature = "fastembed")]
     {
-        s_core::DualEmbedder::try_new_default()
+        #[cfg(feature = "gate2-hooks")]
+        let idle_unload_timeout = gate2_hooks::idle_unload_override(std::env::args())
+            .unwrap_or(s_core::DEFAULT_IDLE_UNLOAD_TIMEOUT);
+        #[cfg(not(feature = "gate2-hooks"))]
+        let idle_unload_timeout = s_core::DEFAULT_IDLE_UNLOAD_TIMEOUT;
+        Ok(ManagedEmbedder::with_config(
+            s_core::ManagedEmbedderConfig {
+                idle_unload_timeout: Some(idle_unload_timeout),
+            },
+        ))
     }
     #[cfg(not(feature = "fastembed"))]
     {
-        Ok(DevHashEmbedder)
+        ManagedEmbedder::from_ready(DevHashEmbedder)
     }
 }
 
 /// Opens or creates the SQLCipher-encrypted `MemoryStore` at `db_path` using
-/// the DPAPI-unwrapped 256-bit `db_key` (Iron Rule 7).
+/// the DPAPI-unwrapped 256-bit `db_key` (Iron Rule 7) and attaches `embedder`.
 ///
 /// In debug builds, seeds synthetic `[DEMO]` blocks only when the store is empty
 /// so subsequent restarts never collide on `event_id` (ADR-001).
-fn init_store(db_path: &Path, db_key: &DbKey) -> Result<SharedMemoryStore, String> {
-    let embedder = build_embedder().map_err(|e| e.to_string())?;
+fn init_store_with_embedder(
+    db_path: &Path,
+    db_key: &DbKey,
+    embedder: AppEmbedder,
+) -> Result<SharedMemoryStore, String> {
     #[allow(unused_mut)]
     let mut store = MemoryStore::open_encrypted(db_path, db_key.expose(), embedder)
         .map_err(|e| e.to_string())?;
@@ -237,6 +299,12 @@ fn init_store(db_path: &Path, db_key: &DbKey) -> Result<SharedMemoryStore, Strin
     }
 
     Ok(Arc::new(Mutex::new(store)))
+}
+
+#[cfg(test)]
+fn init_store(db_path: &Path, db_key: &DbKey) -> Result<SharedMemoryStore, String> {
+    let embedder = build_embedder().map_err(|e| e.to_string())?;
+    init_store_with_embedder(db_path, db_key, embedder)
 }
 
 #[cfg(test)]
@@ -531,6 +599,14 @@ fn ensure_window_label(actual: &str, expected: &str) -> Result<(), String> {
     }
 }
 
+fn ensure_window_label_in(actual: &str, allowed: &[&str]) -> Result<(), String> {
+    if allowed.contains(&actual) {
+        Ok(())
+    } else {
+        Err(format!("command is restricted to windows {allowed:?}"))
+    }
+}
+
 /// Tauri IPC commands for the overlay and Memory Panel frontends.
 pub mod commands {
     use super::*;
@@ -610,6 +686,7 @@ pub mod commands {
     /// Fetches aggregated today stats, guard counters, blocklist, and sensor state.
     /// Restricted to `"panel"`.
     #[tauri::command]
+    #[allow(clippy::too_many_arguments)] // Tauri commands inject each managed `State<'_, T>` separately.
     pub async fn get_memory_panel_data(
         window: tauri::WebviewWindow,
         tz_offset_minutes: i32,
@@ -618,9 +695,11 @@ pub mod commands {
         user_blocklist: tauri::State<'_, Arc<UserBlocklist>>,
         pipeline: tauri::State<'_, SharedPipeline>,
         latency: tauri::State<'_, Arc<SearchLatencyTracker>>,
+        embedder: tauri::State<'_, AppEmbedder>,
     ) -> Result<MemoryPanelDto, String> {
         ensure_window_label(window.label(), PANEL_WINDOW_LABEL)?;
         let sensor = read_sensor_status(pipeline.inner());
+        let embedder_status = embedder.status();
         let store = Arc::clone(store.inner());
         let guard_stats = Arc::clone(guard_stats.inner());
         let user_blocklist = Arc::clone(user_blocklist.inner());
@@ -631,6 +710,7 @@ pub mod commands {
             guard_stats,
             user_blocklist,
             sensor,
+            embedder_status,
             last_search_ms,
             tz_offset_minutes,
         )
@@ -740,6 +820,59 @@ pub mod commands {
         ensure_window_label(window.label(), PANEL_WINDOW_LABEL)?;
         delete_all_memory_inner(Arc::clone(store.inner()), confirm).await
     }
+
+    /// Enables or disables launching Synapse Mind at Windows sign-in (`HKCU\...\Run`)
+    /// and synchronizes the tray menu checkmark. Restricted to `"panel"`.
+    #[tauri::command]
+    pub fn set_autostart(
+        window: tauri::WebviewWindow,
+        enabled: bool,
+        tray_state: tauri::State<'_, SharedTray>,
+    ) -> Result<bool, String> {
+        ensure_window_label(window.label(), PANEL_WINDOW_LABEL)?;
+        let actual = autostart::set_enabled(enabled)?;
+        if let Ok(guard) = tray_state.lock()
+            && let Some(tray) = guard.as_ref()
+        {
+            tray.sync_autostart(actual);
+        }
+        Ok(actual)
+    }
+
+    /// Returns the current semantic embedder readiness / download status.
+    /// Allowed for both `"main"` overlay and `"panel"` Memory Panel windows.
+    #[tauri::command]
+    pub fn get_embedder_status(
+        window: tauri::WebviewWindow,
+        embedder: tauri::State<'_, AppEmbedder>,
+    ) -> Result<embedder_ui::EmbedderStatusDto, String> {
+        ensure_window_label_in(window.label(), &[OVERLAY_WINDOW_LABEL, PANEL_WINDOW_LABEL])?;
+        Ok(embedder_ui::EmbedderStatusDto::from_core(
+            &embedder.status(),
+        ))
+    }
+
+    /// Retries initializing / downloading the local semantic embedding model.
+    /// Restricted to `"panel"`.
+    #[tauri::command]
+    pub fn retry_embedder_download(
+        window: tauri::WebviewWindow,
+        embedder: tauri::State<'_, AppEmbedder>,
+    ) -> Result<embedder_ui::EmbedderStatusDto, String> {
+        ensure_window_label(window.label(), PANEL_WINDOW_LABEL)?;
+        #[cfg(feature = "fastembed")]
+        if !matches!(
+            embedder.status(),
+            EmbedderStatus::Ready | EmbedderStatus::Downloading { .. }
+        ) {
+            embedder
+                .spawn_fastembed(app_fastembed_config())
+                .map_err(|err| format!("model indirme başlatılamadı: {err}"))?;
+        }
+        Ok(embedder_ui::EmbedderStatusDto::from_core(
+            &embedder.status(),
+        ))
+    }
 }
 
 fn read_sensor_status(pipeline: &SharedPipeline) -> SensorStatusDto {
@@ -817,14 +950,6 @@ fn drop_reason_key(reason: DropReason) -> &'static str {
     }
 }
 
-fn embedder_display_label() -> String {
-    if cfg!(feature = "fastembed") {
-        "bge-small-en-v1.5 (FP32+INT8) · yerel".to_owned()
-    } else {
-        "DevHashEmbedder (dev) · yerel".to_owned()
-    }
-}
-
 #[cfg(windows)]
 fn current_process_working_set_bytes() -> Option<u64> {
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -850,6 +975,7 @@ async fn build_memory_panel_data(
     guard_stats: Arc<GuardStats>,
     user_blocklist: Arc<UserBlocklist>,
     sensor: SensorStatusDto,
+    embedder_status: EmbedderStatus,
     last_search_ms: Option<f64>,
     tz_offset_minutes: i32,
 ) -> Result<MemoryPanelDto, String> {
@@ -916,7 +1042,9 @@ async fn build_memory_panel_data(
         user_blocklist: user_blocklist.list(),
         last_search_ms,
         app_memory_bytes: current_process_working_set_bytes(),
-        embedder_label: embedder_display_label(),
+        embedder_label: embedder_ui::embedder_display_label(&embedder_status),
+        embedder_status: embedder_ui::EmbedderStatusDto::from_core(&embedder_status),
+        autostart_enabled: autostart::is_enabled(),
         is_demo: cfg!(debug_assertions),
         version: env!("CARGO_PKG_VERSION").to_owned(),
     })
@@ -979,7 +1107,8 @@ async fn search_with_store(
             .lock()
             .map_err(|_| "memory store lock poisoned".to_owned())?;
         guard
-            .hybrid_search(&trimmed, limit)
+            .hybrid_search_detailed(&trimmed, limit, &HybridSearchConfig::default())
+            .map(|outcome| outcome.hits)
             .map_err(|e| e.to_string())
     })
     .await
@@ -1181,9 +1310,18 @@ pub fn apply_panel_backdrop(window: &tauri::WebviewWindow) -> PanelBackdropStatu
 /// Starts the Tauri 2.0 overlay application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "gate2-hooks")]
+    if gate2_hooks::try_signal_existing_instance() {
+        return;
+    }
+
     let _instance_guard = match singleton::acquire_default() {
         Ok(singleton::AcquireOutcome::Acquired(guard)) => guard,
         Ok(singleton::AcquireOutcome::AlreadyRunning) => {
+            #[cfg(feature = "gate2-hooks")]
+            if gate2_hooks::wait_and_signal_existing_instance(Duration::from_secs(3)) {
+                return;
+            }
             eprintln!("synapse-mind: another instance is already running; exiting.");
             return;
         }
@@ -1197,13 +1335,19 @@ pub fn run() {
     let db_key = keystore::load_or_create_db_key(&key_path)
         .expect("failed to load or create DPAPI database key");
 
-    let store = init_store(&db_path, &db_key).expect("failed to initialize MemoryStore");
+    let embedder = build_embedder().expect("failed to initialize embedder");
+    let store = init_store_with_embedder(&db_path, &db_key, embedder.clone())
+        .expect("failed to initialize MemoryStore");
     drop(db_key);
 
     let start_id = next_store_event_id(&store).expect("failed to read next_event_id");
     let guard_stats = GuardStats::new();
     let user_blocklist = UserBlocklist::new();
     let search_latency = Arc::new(SearchLatencyTracker::default());
+    let setup_embedder = embedder.clone();
+    let setup_embedder_store = Arc::clone(&store);
+    #[cfg(feature = "fastembed")]
+    let spawn_embedder = embedder.clone();
     let pipeline_store = Arc::clone(&store);
     let pipeline_stats = Arc::clone(&guard_stats);
     let pipeline_blocklist = Arc::clone(&user_blocklist);
@@ -1213,11 +1357,18 @@ pub fn run() {
     let exit_pipeline = Arc::clone(&pipeline);
     let tray_state: SharedTray = Arc::new(Mutex::new(None));
     let setup_tray_state = Arc::clone(&tray_state);
+    #[cfg(feature = "gate2-hooks")]
+    let gate2_guard: Arc<Mutex<Option<gate2_hooks::Gate2HookGuard>>> = Arc::new(Mutex::new(None));
+    #[cfg(feature = "gate2-hooks")]
+    let setup_gate2_guard = Arc::clone(&gate2_guard);
+    #[cfg(feature = "gate2-hooks")]
+    let exit_gate2_guard = Arc::clone(&gate2_guard);
 
     let alt_space = Shortcut::new(Some(Modifiers::ALT), Code::Space);
 
     let app = tauri::Builder::default()
         .manage(store)
+        .manage(embedder)
         .manage(guard_stats)
         .manage(user_blocklist)
         .manage(Arc::clone(&pipeline))
@@ -1239,6 +1390,14 @@ pub fn run() {
                 pipeline_stats,
                 pipeline_blocklist,
             );
+            // Test-only (gate2-hooks): pause capture so memory measurements are
+            // deterministic and not driven by desktop activity.
+            #[cfg(feature = "gate2-hooks")]
+            if gate2_hooks::has_pause_capture_flag(std::env::args())
+                && let Err(err) = controller.pause_for(gate2_hooks::PAUSE_CAPTURE_DURATION)
+            {
+                eprintln!("synapse-mind: gate2-hooks pause-capture warning: {err}");
+            }
             if let Ok(mut slot) = setup_pipeline.lock() {
                 *slot = Some(controller);
             }
@@ -1265,6 +1424,27 @@ pub fn run() {
                     let _ = window.show();
                 }
             }
+
+            embedder_ui::spawn_embedder_status_relay(
+                app.handle().clone(),
+                setup_embedder,
+                setup_embedder_store,
+            );
+            #[cfg(feature = "fastembed")]
+            if let Err(err) = spawn_embedder.spawn_fastembed(app_fastembed_config()) {
+                eprintln!("synapse-mind: embedder initialization warning: {err}");
+            }
+            #[cfg(all(windows, feature = "fastembed"))]
+            spawn_working_set_trimmer(spawn_embedder.clone());
+
+            #[cfg(feature = "gate2-hooks")]
+            {
+                let hook_guard = gate2_hooks::Gate2HookGuard::install(app.handle());
+                if let Ok(mut slot) = setup_gate2_guard.lock() {
+                    *slot = Some(hook_guard);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1279,7 +1459,10 @@ pub fn run() {
             commands::add_blocked_app,
             commands::remove_blocked_app,
             commands::delete_recent_memory,
-            commands::delete_all_memory
+            commands::delete_all_memory,
+            commands::set_autostart,
+            commands::get_embedder_status,
+            commands::retry_embedder_download
         ])
         .build(tauri::generate_context!())
         .expect("error while building synapse-mind");
@@ -1291,6 +1474,10 @@ pub fn run() {
             api.prevent_exit();
         }
         tauri::RunEvent::Exit => {
+            #[cfg(feature = "gate2-hooks")]
+            if let Ok(mut slot) = exit_gate2_guard.lock() {
+                drop(slot.take());
+            }
             if let Ok(mut slot) = exit_pipeline.lock()
                 && let Some(controller) = slot.take()
             {
@@ -1730,6 +1917,7 @@ mod tests {
                 paused: false,
                 pause_remaining_secs: None,
             },
+            EmbedderStatus::Ready,
             Some(12.5),
             180,
         )
@@ -1886,5 +2074,89 @@ mod tests {
             ),
             "unexpected backdrop status: {status:?}"
         );
+    }
+
+    #[test]
+    fn gate2_hooks_feature_is_off_by_default() {
+        #[cfg(not(feature = "gate2-hooks"))]
+        const {
+            assert!(!cfg!(feature = "gate2-hooks"));
+        }
+        #[cfg(feature = "gate2-hooks")]
+        const {
+            assert!(cfg!(feature = "gate2-hooks"));
+        }
+    }
+
+    #[test]
+    fn multi_window_label_guard_allows_listed_windows_only() {
+        assert!(
+            ensure_window_label_in("main", &[OVERLAY_WINDOW_LABEL, PANEL_WINDOW_LABEL]).is_ok()
+        );
+        assert!(
+            ensure_window_label_in("panel", &[OVERLAY_WINDOW_LABEL, PANEL_WINDOW_LABEL]).is_ok()
+        );
+        assert!(
+            ensure_window_label_in("other", &[OVERLAY_WINDOW_LABEL, PANEL_WINDOW_LABEL]).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn search_falls_back_to_bm25_when_managed_embedder_downloading_or_failed() {
+        struct UnreachableEmbedder;
+        impl s_core::Embedder for UnreachableEmbedder {
+            fn embed_batch(&self, texts: &[&str]) -> s_core::Result<Vec<Vec<f32>>> {
+                Ok(vec![vec![0.0_f32; s_core::EMBEDDING_DIM]; texts.len()])
+            }
+        }
+
+        let managed = ManagedEmbedder::new();
+        assert_eq!(managed.status(), EmbedderStatus::NotDownloaded);
+
+        let mut store = MemoryStore::open_in_memory(managed.clone()).expect("open in-memory");
+        store.ingest_batch(&demo_blocks()).expect("ingest demo");
+        let shared = Arc::new(Mutex::new(store));
+
+        // 1) While model is not yet ready, keyword BM25 search continues returning hits cleanly.
+        let hits = search_with_store(
+            Arc::clone(&shared),
+            SearchRequest {
+                query: "sqlite_vec".to_owned(),
+                k: 5,
+            },
+        )
+        .await
+        .expect("BM25 search succeeds before model download completes");
+        assert!(!hits.is_empty());
+
+        // 2) Simulate download progress callback followed by offline failure -> Failed state.
+        let err = managed
+            .initialize_with::<_, UnreachableEmbedder>(|progress| {
+                progress(33_550_000, Some(67_100_000));
+                Err(s_core::CoreError::EmbedderUnavailable(
+                    "simulated network failure".to_owned(),
+                ))
+            })
+            .expect_err("simulated loader failure should return error");
+        assert!(err.to_string().contains("simulated"));
+        assert!(managed.status().is_failed());
+
+        let dto = embedder_ui::EmbedderStatusDto::from_core(&managed.status());
+        assert_eq!(dto.state, embedder_ui::EmbedderStateKind::Failed);
+        assert_eq!(
+            dto.message.as_deref(),
+            Some(embedder_ui::SEMANTIC_DISABLED_NOTE)
+        );
+
+        let fallback_hits = search_with_store(
+            shared,
+            SearchRequest {
+                query: "sqlite_vec".to_owned(),
+                k: 5,
+            },
+        )
+        .await
+        .expect("BM25 search remains available when embedder failed");
+        assert!(!fallback_hits.is_empty());
     }
 }

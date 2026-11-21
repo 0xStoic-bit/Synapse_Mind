@@ -2,6 +2,14 @@
 //!
 //! `gate2-app [--exe <yol>] [--skip-search] [--keep-going]`
 //!
+//! PANEL EVRESI OTOMATIKTIR (v0.1.1): Hafıza Paneli, klavye enjeksiyonu (Ctrl+M) yerine uygulamanın test-only
+//! `gate2-hooks` kancasıyla açılır. Bu yüzden `--exe` ile verilen ikili MUTLAKA
+//! `cargo build --manifest-path src-tauri/Cargo.toml --features gate2-hooks` ile derlenmiş olmalıdır (varsayılan yol
+//! `src-tauri/target/debug/synapse-mind.exe`; yayın/`cargo tauri build` ikilisi kancayı İÇERMEZ). Kanca yoksa harness
+//! panel evresini ÇALIŞTIRMAZ ve uygulamayı başlatmadan çıkış kodu 2 ile açıkça bildirir (`--skip-search` yalnız
+//! arama + panel evrelerini birlikte atlar). Kanca: ikinci çağrı `synapse-mind.exe --gate2-open-panel`
+//! (adlı olay `Local\SynapseMind-Gate2-OpenPanel`).
+//!
 //! Akış: (1) uygulama izole `LOCALAPPDATA` ile başlatılır (kullanıcının gerçek Synapse Mind verisine DOKUNULMAZ),
 //! (2) gerçek sensör yoluyla SENTETİK sırlar beslenir: sentetik bir üst düzey pencere (başlık + UIA ile okunan
 //! çok satırlı metin) ve üç sentetik pano içeriği, (3) boşta DÖKÜM (uygulama + tüm WebView2 alt süreçleri),
@@ -43,12 +51,21 @@ fn main() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../src-tauri/target/release/synapse-mind.exe")
+                .join("../../src-tauri/target/debug/synapse-mind.exe")
         });
     let exe = exe.canonicalize().unwrap_or(exe);
     println!("Resmi Gate 2: ikili={} ", exe.display());
     if !exe.exists() {
         println!("SONUC: ikili bulunamadi");
+        std::process::exit(2);
+    }
+    // Kanca korumasi: panel evresi (arama ile birlikte) kancasiz ikiliyle calistirilmaz.
+    let hook_probe = probe_gate2_hook(&exe);
+    println!("Gate2 panel kancasi (ikilide bayrak+olay adi): {hook_probe}");
+    if !skip_search && !hook_probe.present() {
+        println!(
+            "SONUC: panel kancasi YOK ({hook_probe}); ikili `cargo build --manifest-path src-tauri/Cargo.toml --features gate2-hooks` ile derlenmeli (yayin ikilisinde kanca bilincli olarak bulunmaz). Panel evresi calistirilmadi; sonuc GUVENILMEZ"
+        );
         std::process::exit(2);
     }
 
@@ -82,8 +99,8 @@ fn main() {
         });
     let mut child = cmd.spawn().expect("uygulama baslatilamadi");
     let root_pid = child.id();
-    let db_path = data_root.path().join("Synapse Mind").join("memory.db");
-    let key_path = data_root.path().join("Synapse Mind").join("key.bin");
+    let db_path = data_root.path().join("SynapseMind").join("memory.db");
+    let key_path = data_root.path().join("SynapseMind").join("key.bin");
     for _ in 0..120 {
         if db_path.exists() && key_path.exists() {
             break;
@@ -96,6 +113,22 @@ fn main() {
         std::process::exit(2);
     }
     std::thread::sleep(Duration::from_secs(6));
+    if args.iter().any(|a| a == "--dry-overlay") {
+        // Tanı: yalnızca overlay odak adımı (dökümsüz, işaret YAZILMAZ); resmi koşuyla aynı `ensure_overlay_foreground`.
+        let ok = s_gate2::winutil::ensure_overlay_foreground(
+            &mut || process_tree(root_pid).iter().map(|p| p.pid).collect(),
+            "Synapse Mind",
+            5,
+            Duration::from_secs(6),
+            &mut |l| println!("   {l}"),
+        );
+        println!("dry-overlay: on_plan_dogrulandi={ok}");
+        let _ = Command::new("taskkill")
+            .args(["/PID", &root_pid.to_string(), "/T", "/F"])
+            .status();
+        let _ = child.wait();
+        std::process::exit(if ok { 0 } else { 2 });
+    }
     if args.iter().any(|a| a == "--dry-panel") {
         // Hızlı kontrol: yalnızca Alt+Space + Ctrl+M ile panelin açıldığını doğrular (döküm yok).
         press_alt_space();
@@ -372,18 +405,26 @@ fn main() {
     stage!("pencere-kapali");
 
     if !skip_search {
-        press_alt_space();
-        std::thread::sleep(Duration::from_millis(2000));
         // Girdi YALNIZCA ön plan overlay'e aitse enjekte edilir (aksi halde kullanıcının başka uygulamasına yazılırdı).
-        let mut fg_ok = false;
-        for _ in 0..6 {
-            let pids: Vec<u32> = process_tree(root_pid).iter().map(|p| p.pid).collect();
-            if s_gate2::winutil::foreground_belongs_to(&pids) {
-                fg_ok = true;
-                break;
-            }
-            let _ = s_gate2::winutil::activate_window_titled(&pids, "Synapse Mind");
-            std::thread::sleep(Duration::from_millis(700));
+        // Kök neden (v0.1.1): eski adım tek Alt+Space + 2 sn uyku + yalnız ön plan yoklamasıydı; overlay görünür değilse
+        // (kısayol gecikti/yutuldu) `activate_window_titled` pencere bulamıyor ve Alt+Space bir daha basılmıyordu.
+        // Şimdi: görünürlük beklenir, gizliyse Alt+Space yeniden basılır, görünür-ama-arkadaysa odak zorlanır; her
+        // denemenin ön plan süreci/başlığı loglanır. Doğrulanmadıkça işaret yazılmaz.
+        let mut fg_ok = s_gate2::winutil::ensure_overlay_foreground(
+            &mut || process_tree(root_pid).iter().map(|p| p.pid).collect(),
+            "Synapse Mind",
+            5,
+            Duration::from_secs(6),
+            &mut |l| println!("   {l}"),
+        );
+        if !fg_ok {
+            fg_ok = s_gate2::winutil::ensure_overlay_foreground(
+                &mut || process_tree(root_pid).iter().map(|p| p.pid).collect(),
+                "Synapse Mind",
+                3,
+                Duration::from_secs(8),
+                &mut |l| println!("   {l}"),
+            );
         }
         if fg_ok {
             type_text(&marker);
@@ -398,24 +439,55 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(3500));
         stage!("arama-sonrasi");
-        // Hafıza Paneli AÇIKKEN (Ctrl+M; panel penceresi exclude_from_capture'lı, dökümü engellemez).
-        // Panel açılana kadar (görünür "Hafıza" penceresi) en çok 5 deneme.
-        for _ in 0..5 {
-            let pids: Vec<u32> = process_tree(root_pid).iter().map(|p| p.pid).collect();
-            let _ = s_gate2::winutil::activate_window_titled(&pids, "Synapse Mind");
-            std::thread::sleep(Duration::from_millis(700));
-            if s_gate2::winutil::foreground_belongs_to(&pids) {
-                press_ctrl_m();
-            }
-            std::thread::sleep(Duration::from_millis(2000));
+        // Hafıza Paneli AÇIKKEN (panel penceresi exclude_from_capture'lı, dökümü engellemez). Panel, klavye enjeksiyonu
+        // yerine `gate2-hooks` kancasıyla açılır: çalışan örneğe ikinci çağrı `--gate2-open-panel` (adlı olay sinyali).
+        // Panel açılana (görünür "Hafıza" penceresi) kadar en çok 3 deneme; her deneme izole LOCALAPPDATA ile yapılır.
+        let mut hook_log: Vec<String> = Vec::new();
+        for attempt in 1..=3 {
+            let mut helper = match Command::new(&run_exe)
+                .arg("--gate2-open-panel")
+                .env("LOCALAPPDATA", data_root.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    hook_log.push(format!("deneme {attempt}: yardimci baslatilamadi: {e}"));
+                    continue;
+                }
+            };
+            // Yardımcı olayı sinyalleyip hemen çıkar; çıkmazsa (kanca yok / birincil örnek oldu) öldürülür.
+            let started = std::time::Instant::now();
+            let status = loop {
+                match helper.try_wait() {
+                    Ok(Some(st)) => break Some(st),
+                    Ok(None) if started.elapsed() < Duration::from_secs(15) => {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    _ => {
+                        let _ = helper.kill();
+                        let _ = helper.wait();
+                        break None;
+                    }
+                }
+            };
+            hook_log.push(format!(
+                "deneme {attempt}: yardimci_cikis={}",
+                status.map_or("ZAMAN_ASIMI(oldurüldü)".to_string(), |s| s.to_string())
+            ));
+            std::thread::sleep(Duration::from_millis(2500));
             let pids: Vec<u32> = process_tree(root_pid).iter().map(|p| p.pid).collect();
             if s_gate2::winutil::visible_window_titles(&pids)
                 .iter()
                 .any(|t| t.contains("Hafıza"))
             {
+                hook_log.push("panel penceresi gorundu".to_string());
                 break;
             }
         }
+        println!("-- PANEL_KANCASI: {hook_log:?}");
         std::thread::sleep(Duration::from_millis(1500));
         stage!("panel-acik");
     }
@@ -502,7 +574,7 @@ fn main() {
             .filter_map(|x| x.split('/').next())
             .collect();
         println!(
-            "-- KONTROL panel-acildi: gorunur 'Hafiza' penceresi evreleri={panel_window_stages:?} (panel.html basligi bellekte: {stages:?}; YALNIZ BILGI: panel otomasyonla acilamadiysa panel evresi panelsiz dokumdur)"
+            "-- KONTROL panel-acildi: gorunur 'Hafiza' penceresi evreleri={panel_window_stages:?} (panel.html basligi bellekte: {stages:?}; panel gate2-hooks kancasiyla acilir; acilmadiysa kontrol basarisiz sayilir)"
         );
     }
     println!(
@@ -530,7 +602,7 @@ fn main() {
         && hmac_verified;
     if !controls_ok {
         println!(
-            "SONUC: KONTROL/CANLILIK BASARISIZ (kendi-surec={self_ok}, isaret={marker_ok}, overlay_arayuz={ui_overlay_ok}, panel_penceresi={panel_window_ok}, panel_arayuz={ui_panel_ok}, hmac_dogrulandi={hmac_verified}); sonuc guvenilmez"
+            "SONUC: KONTROL/CANLILIK BASARISIZ (kendi-surec={self_ok}, isaret={marker_ok}, overlay_arayuz={ui_overlay_ok}, panel_penceresi(kanca ile acilmasi gerekir; ikili --features gate2-hooks ile derlenmis olmali)={panel_window_ok}, panel_arayuz={ui_panel_ok}, hmac_dogrulandi={hmac_verified}); sonuc guvenilmez"
         );
         std::process::exit(2);
     }
@@ -564,6 +636,71 @@ fn main() {
     println!(
         "SONUC: uygulama + alt surec dokumlerinde ham sir / anahtar / HMAC anahtari bulunamadi -> PASS"
     );
+}
+
+/// `gate2-hooks` kancasının ikilide bulunup bulunmadığı: adlı olay (belirleyici) ve `--gate2-open-panel`
+/// bayrağı (bilgi amaçlı) ASCII/UTF-16LE. Yayın ikilisinde ikisi de bulunmaz (overlay-ui-dev doğrulaması);
+/// olay adı yoksa panel evresi çalıştırılmaz.
+#[cfg(windows)]
+struct HookProbe {
+    flag: bool,
+    event: bool,
+}
+
+#[cfg(windows)]
+impl HookProbe {
+    /// Adlı olay dizesi kancanın kesin işaretidir. 18 baytlık bayrak dizesi optimize yayın
+    /// derlemesinde karşılaştırma için anlık değerlere (immediate) gömülebildiğinden ikilide düz
+    /// metin olarak bulunmayabilir (v0.1.1 doğrulaması, 21.11.2026); bu yüzden tek başına
+    /// belirleyici değildir. Kancanın gerçekten çalıştığı, panel penceresinin açılmasıyla ayrıca
+    /// doğrulanır (`panel_window_ok`).
+    fn present(&self) -> bool {
+        self.event
+    }
+}
+
+#[cfg(windows)]
+impl std::fmt::Display for HookProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "bayrak(--gate2-open-panel)={} olay(Local\\SynapseMind-Gate2-OpenPanel)={}",
+            self.flag, self.event
+        )
+    }
+}
+
+#[cfg(windows)]
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    let Some((&first, rest)) = needle.split_first() else {
+        return true;
+    };
+    let mut from = 0;
+    while let Some(pos) = hay[from..].iter().position(|&b| b == first) {
+        let at = from + pos;
+        if hay.len() - at >= needle.len() && &hay[at + 1..at + needle.len()] == rest {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+#[cfg(windows)]
+fn probe_gate2_hook(exe: &std::path::Path) -> HookProbe {
+    let Ok(bytes) = std::fs::read(exe) else {
+        return HookProbe {
+            flag: false,
+            event: false,
+        };
+    };
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    let flag = "--gate2-open-panel";
+    let event = "Local\\SynapseMind-Gate2-OpenPanel";
+    HookProbe {
+        flag: contains_bytes(&bytes, flag.as_bytes()) || contains_bytes(&bytes, &utf16(flag)),
+        event: contains_bytes(&bytes, event.as_bytes()) || contains_bytes(&bytes, &utf16(event)),
+    }
 }
 
 /// Uygulama kapandıktan sonra şifreli DB'yi gerçek anahtarla açıp olayların maskeli geldiğini doğrular.

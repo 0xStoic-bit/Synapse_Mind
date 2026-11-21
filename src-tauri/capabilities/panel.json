@@ -13,6 +13,9 @@
     "allow-remove-blocked-app",
     "allow-delete-recent-memory",
     "allow-delete-all-memory",
-    "allow-open-overlay-with-query"
+    "allow-open-overlay-with-query",
+    "allow-set-autostart",
+    "allow-get-embedder-status",
+    "allow-retry-embedder-download"
   ]
 }

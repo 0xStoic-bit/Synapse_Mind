@@ -14,7 +14,7 @@ Her şey cihazında kalır. Parolalar, API anahtarları ve kişisel bilgiler dis
 ## Ne yapar
 
 - **Hatırlar.** Odaktaki pencerenin metnini (UI Automation), panoyu ve pencere geçişlerini olay olarak yakalar. Periyodik ekran görüntüsü almaz.
-- **Bağlar.** Olaylar arasında nedensellik kurar: hata → arama → panoya kopyalama → yapıştırma. Arama sonucunda yalnızca anı değil, o anın zincirini de görürsün.
+- **Bağlar.** Olayları zamana ve basit kurallara göre birbirine bağlar: hatadan sonra yapılan arama, panodan yapıştırma, uygulama ya da pencere değiştirme. Arama sonucunda yalnızca anı değil, o anın zincirini de görürsün. Bu bağlar kurala dayalıdır, içeriği "anlayan" bir model değildir.
 - **Bulur.** BM25 tam metin + vektör benzerliği + zaman ile hibrit arama. Tekil sorgu gömme p95 **18,06 ms**.
 - **Korur.** Kara listedeki uygulamalar (parola yöneticileri, gizli sekmeler, `.env` / `.pem` / `id_rsa` pencereleri) hiç işlenmez. Diğer her şey maskeleyiciden geçer: `STRIPE_SECRET=[REDACTED_API_KEY]`.
 - **Gizlenir.** Arama penceresi ve panel ekran kaydında ve ekran paylaşımında görünmez. Tam ekran oyunda kendini askıya alır.
@@ -74,9 +74,10 @@ Makine boştayken, release derlemesi; AMD Ryzen 7 8845HS, Windows 11. Tam tablo:
 | Uçtan uca arama (1000 olay, şifreli, k=10) | 34,99 ms | 39,94 ms | |
 | Hibrit arama, 10k vektör | 8,00 ms | 9,65 ms | |
 | Guard, ≈200 B | 67,7 µs | 131,6 µs | |
-| Rust daemon belleği (panel açıkken) | 43,5 MB | | < 50 MB ✅ |
+| Uygulama belleği, model yüklü (WS / Private) | 207 / 170 MB | | ~200 MB altı ⚠️ sınırda |
+| Uygulama belleği, boşta: model boşaltıldıktan sonra (WS / Private) | 2,8 / 31,6 MB | | < 50 MB ✅ |
 
-Bilinen: 4 KB'lık tek metin gömme p95 88 ms (arama sorgusu boyutunun çok üstü; v0.1.1'de sorgu uzunluğu sınırı değerlendirilecek).
+Model 10 dakika kullanılmayınca bellekten boşaltılır, bir sonraki aramada yeniden yüklenir. 4 KB'lık uzun sorgular 200 bayta kırpılır; gömme p95 19,4 ms.
 
 ## Kurulum ve derleme
 
@@ -99,7 +100,9 @@ Geliştirme komutlarının tamamı: [komutlar.txt](komutlar.txt).
 ## Henüz yok (v0.1.1+)
 
 - OCR görsel yedek (UI Automation ağacı boş pencerelerde metin yakalanmaz)
-- Uzun sorgular (4 KB+) için uzunluk sınırı
+- Görsel analizi: panoya kopyalanan görseller ve dosyalar yalnızca üst veri olarak kaydedilir, içerikleri okunmaz
+- Link analizi: kopyalanan bağlantılar metin olarak saklanır, açılmaz ve içerikleri incelenmez
+- Anlamsal bağlama: bağlar şimdilik yalnızca zaman ve kurallarla kurulur
 - Windows dışı platformlar, bulut eşitleme (kapsam dışı)
 
 ## Belgeler
@@ -136,7 +139,7 @@ Everything stays on your device. Passwords, API keys and personal data are maske
 ## What it does
 
 - **Remembers.** Captures the focused window's text (UI Automation), the clipboard and window switches as events. No periodic screenshots.
-- **Connects.** Links events causally: error → search → copy → paste. A search result shows not just a moment but the chain around it.
+- **Connects.** Links events by time and simple rules: a search after an error, a paste from the clipboard, a switch of app or window. A search result shows not just a moment but the chain around it. These links are rule-based, not a model that "understands" content.
 - **Finds.** Hybrid search: BM25 full text + vector similarity + time. Single-query embedding p95 **18.06 ms**.
 - **Protects.** Blocklisted apps (password managers, private browsing, `.env` / `.pem` / `id_rsa` windows) are never processed. Everything else goes through the masker: `STRIPE_SECRET=[REDACTED_API_KEY]`.
 - **Hides.** The search window and the panel are invisible to screen recording and screen sharing. It suspends itself during fullscreen games.
@@ -185,9 +188,10 @@ Idle machine, release build; AMD Ryzen 7 8845HS, Windows 11. Full table: [benchm
 | End-to-end search (1000 events, encrypted, k=10) | 34.99 ms | 39.94 ms | |
 | Hybrid search, 10k vectors | 8.00 ms | 9.65 ms | |
 | Guard, ≈200 B | 67.7 µs | 131.6 µs | |
-| Rust daemon memory (panel open) | 43.5 MB | | < 50 MB ✅ |
+| App memory, model loaded (WS / Private) | 207 / 170 MB | | under ~200 MB ⚠️ borderline |
+| App memory, idle: after the model is unloaded (WS / Private) | 2.8 / 31.6 MB | | < 50 MB ✅ |
 
-Known: embedding a single 4 KB text has p95 88 ms (far above search-query size; a query length limit is planned for v0.1.1).
+The model is unloaded after 10 minutes without use and reloaded on the next search. Long 4 KB queries are truncated to 200 bytes; embedding p95 19.4 ms.
 
 ## Build
 
@@ -210,7 +214,9 @@ All development commands: [komutlar.txt](komutlar.txt).
 ## Not yet (v0.1.1+)
 
 - OCR visual fallback (no text is captured from windows with an empty UI Automation tree)
-- A length limit for long queries (4 KB+)
+- Image analysis: copied images and files are recorded as metadata only; their content is not read
+- Link analysis: copied links are stored as text; they are not opened or inspected
+- Semantic linking: links are currently built only from time and rules
 - Non-Windows platforms, cloud sync (out of scope)
 
 ## License

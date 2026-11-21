@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use s_sensor::ControllerState;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
@@ -15,6 +15,7 @@ pub const TRAY_ID: &str = "synapse-mind-tray";
 const MENU_SEARCH_ID: &str = "tray_search";
 const MENU_PANEL_ID: &str = "tray_panel";
 const MENU_PAUSE_ID: &str = "tray_toggle_pause";
+const MENU_AUTOSTART_ID: &str = "tray_autostart";
 const MENU_QUIT_ID: &str = "tray_quit";
 const TRAY_ICON_SIZE: u32 = 32;
 
@@ -134,10 +135,15 @@ fn tray_image(variant: TrayVisualState) -> Image<'static> {
 pub struct TrayController {
     pipeline: SharedPipeline,
     pause_item: MenuItem<tauri::Wry>,
+    autostart_item: CheckMenuItem<tauri::Wry>,
     last_visual: Arc<Mutex<Option<TrayVisualState>>>,
 }
 
 impl TrayController {
+    pub fn sync_autostart(&self, enabled: bool) {
+        let _ = self.autostart_item.set_checked(enabled);
+    }
+
     pub fn sync(&self, app: &tauri::AppHandle) {
         let (state, paused, remaining) = snapshot_pipeline_state(&self.pipeline);
         let visual = tray_visual_state(state, paused);
@@ -207,6 +213,14 @@ pub fn setup_tray(
         true,
         None::<&str>,
     )?;
+    let autostart_item = CheckMenuItem::with_id(
+        app,
+        MENU_AUTOSTART_ID,
+        "Windows açılışında başlat",
+        true,
+        crate::autostart::is_enabled(),
+        None::<&str>,
+    )?;
     let sep_bottom = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(
         app,
@@ -223,6 +237,7 @@ pub fn setup_tray(
             &panel_item,
             &sep_top,
             &pause_item,
+            &autostart_item,
             &sep_bottom,
             &quit_item,
         ],
@@ -231,6 +246,7 @@ pub fn setup_tray(
     let controller = TrayController {
         pipeline: Arc::clone(&pipeline),
         pause_item,
+        autostart_item,
         last_visual: Arc::new(Mutex::new(Some(initial_visual))),
     };
 
@@ -273,6 +289,21 @@ pub fn setup_tray(
                     }
                 }
                 menu_controller.sync(app);
+                if let Some(panel) = app.get_webview_window("panel") {
+                    let _ = panel.emit("panel://refresh", ());
+                }
+            }
+            MENU_AUTOSTART_ID => {
+                let next = !crate::autostart::is_enabled();
+                match crate::autostart::set_enabled(next) {
+                    Ok(actual) => {
+                        menu_controller.sync_autostart(actual);
+                    }
+                    Err(err) => {
+                        eprintln!("synapse-mind: failed to toggle autostart from tray: {err}");
+                        menu_controller.sync_autostart(crate::autostart::is_enabled());
+                    }
+                }
                 if let Some(panel) = app.get_webview_window("panel") {
                     let _ = panel.emit("panel://refresh", ());
                 }

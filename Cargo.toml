@@ -10,7 +10,7 @@ members = [
 # src-tauri Faz 4'te overlay-ui-dev tarafından eklenecek.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "FSL-1.1-MIT"
 publish = false

@@ -9,6 +9,7 @@
     "allow-search",
     "allow-hide-overlay",
     "allow-is-demo-mode",
-    "allow-open-memory-panel"
+    "allow-open-memory-panel",
+    "allow-get-embedder-status"
   ]
 }

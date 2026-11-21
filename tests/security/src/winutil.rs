@@ -489,14 +489,121 @@ pub fn activate_window_titled(pids: &[u32], needle: &str) -> bool {
         let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut Ctx as isize));
     }
     let Some(h) = ctx.found else { return false };
-    // SAFETY: Bulunan geçerli pencere tutamacı; yalnızca ön plan isteği.
+    // SAFETY: Bulunan geçerli pencere tutamacı; yalnızca ön plan isteği (Alt hilesi + AllowSetForegroundWindow +
+    // geçici AttachThreadInput; bağlama her zaman geri alınır).
     unsafe {
+        use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow,
+            GetWindowThreadProcessId,
+        };
         let hwnd = HWND(h as *mut core::ffi::c_void);
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let fg = GetForegroundWindow();
+        let fg_thread = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let me = GetCurrentThreadId();
+        let attached =
+            fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
         keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
         keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        if attached {
+            let _ = AttachThreadInput(me, fg_thread, false);
+        }
     }
     true
+}
+
+/// Tanı: ön plandaki pencerenin (pid, süreç adı, başlık) özeti. Girdi enjekte edilmez.
+pub fn foreground_info() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
+    // SAFETY: Salt sorgular; tutamaç yalnızca bu çağrıda kullanılır, `buf` yazılabilir 256 elemanlı tampon.
+    let (pid, title) = unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() {
+            return "on plan yok".to_owned();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        let mut buf = [0u16; 256];
+        let n = GetWindowTextW(h, &mut buf);
+        (pid, String::from_utf16_lossy(&buf[..n.max(0) as usize]))
+    };
+    let exe = list_processes()
+        .into_iter()
+        .find(|p| p.pid == pid)
+        .map(|p| p.exe)
+        .unwrap_or_else(|| "?".to_owned());
+    format!("pid={pid} exe={exe} baslik={title:?}")
+}
+
+/// Overlay penceresini ön plana getirmeyi dener ve yalnızca DOĞRULANMIŞ ön plan için `true` döner.
+///
+/// Her denemede: (1) overlay GÖRÜNÜR değilse Alt+Space (kısayol AÇ/KAPA anahtarıdır; görünürken basılsaydı gizlerdi,
+/// bu yüzden yalnız gizliyken basılır) ve görünür olana kadar en çok `show_wait` beklenir (uygulama başlangıcı /
+/// gömme modeli yüklemesi ilk gösterimi geciktirebilir); (2) görünürse ama ön planda değilse `activate_window_titled`
+/// (Alt hilesi + AttachThreadInput); (3) ön plan `pids` içindeyse ve overlay hâlâ görünürse `true`. Her denemenin
+/// durumu `log` ile çağırana verilir. Girdi enjekte edilmez: çağıran yalnızca `true` ise yazar.
+pub fn ensure_overlay_foreground(
+    pids_of: &mut dyn FnMut() -> Vec<u32>,
+    needle: &str,
+    attempts: u32,
+    show_wait: Duration,
+    log: &mut dyn FnMut(String),
+) -> bool {
+    for attempt in 1..=attempts {
+        let mut visible = find_window_titled(&pids_of(), needle).is_some();
+        log(format!(
+            "overlay deneme {attempt}/{attempts}: gorunur={visible} on_plan=[{}]",
+            foreground_info()
+        ));
+        if !visible {
+            press_alt_space();
+            let start = std::time::Instant::now();
+            while start.elapsed() < show_wait {
+                std::thread::sleep(Duration::from_millis(150));
+                if find_window_titled(&pids_of(), needle).is_some() {
+                    visible = true;
+                    break;
+                }
+            }
+            log(format!(
+                "   Alt+Space sonrasi {} ms: gorunur={visible} on_plan=[{}]",
+                start.elapsed().as_millis(),
+                foreground_info()
+            ));
+            if !visible {
+                continue;
+            }
+        }
+        // Görünür: ön planı yokla; değilse odak ver.
+        for _ in 0..4 {
+            let pids = pids_of();
+            if foreground_belongs_to(&pids) && find_window_titled(&pids, needle).is_some() {
+                // Kısa kararlılık beklemesi: odak hemen geri çalınmamalı (ör. kullanıcı etkinliği).
+                std::thread::sleep(Duration::from_millis(300));
+                let pids = pids_of();
+                if foreground_belongs_to(&pids) && find_window_titled(&pids, needle).is_some() {
+                    log(format!("   on plan DOGRULANDI: [{}]", foreground_info()));
+                    return true;
+                }
+            }
+            let _ = activate_window_titled(&pids, needle);
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        log(format!(
+            "   deneme {attempt}: overlay gorunur ama on planda degil: [{}]",
+            foreground_info()
+        ));
+    }
+    false
 }
 
 /// Tanı: verilen süreçlerin TÜM üst düzey pencereleri (görünür mü, başlık).

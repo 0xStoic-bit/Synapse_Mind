@@ -13,6 +13,9 @@ fn main() {
             "remove_blocked_app",
             "delete_recent_memory",
             "delete_all_memory",
+            "set_autostart",
+            "get_embedder_status",
+            "retry_embedder_download",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

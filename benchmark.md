@@ -5,6 +5,127 @@ Not: `.gitignore` içinde `benchmarks/*` dışlandığından ham ölçüm dosyal
 
 ---
 
+## v0.1.1 Ölçümleri (Uzun Sorgu Sınırı & Doğrulanmış Overlay 20 Arama) — 2026-11-21
+
+### Ortam, Git Durumu ve Boşta Kanıtı
+- **Tarih (UTC / Yerel):** `2026-11-21` (`11:51Z–11:55Z` / `14:51–14:55+03:00`)
+- **Temel Git Commit / Çalışma Ağacı:** `0d4a86e` (dal: `v0.1.1`, `git status --short`: `41` girdi; `crates/s-core` sorgu uzunluk/token sınırı `v0.1.1 [DONE]`, `src-tauri/` + `ui/` NSIS/autostart/embedder-ui `v0.1.1 [DONE]` ve `benchmarks/` eklemeleri üzerinde commit/push olmadan ölçüldü)
+- **Derleyici / Araç Zinciri:** `rustc 1.95.0 (59807616e 2026-04-14)`, `cargo 1.95.0 (f2d3ce0bd 2026-03-21)`
+- **Build Profili & Workspace Kilidi (ADR-004):** `benchmarks/Cargo.toml` (`--release`, `lto = "thin"`, `codegen-units = 1`); `benchmarks/Cargo.lock` kök `Cargo.lock` (`hf-hub = 0.5.0` dahil) ile güncellendi ve `Compare-Object` (`cargo tree` default: `0` fark; `--features fastembed`: yalnızca `fastembed v7.7.1 (*)` tekilleştirme satırı farkı, sürüm uyuşmazlığı yok)
+- **Yayın İkilisi (Overlay Testi):** `src-tauri/target/release/synapse-mind.exe` (`45,317,120` B, `21.11.2026 13:51:50`, `cargo tauri build --features fastembed` ile üretilen ikili)
+- **CPU / RAM / İşletim Sistemi:** `AMD Ryzen 7 8845HS w/ Radeon 780M Graphics` (`8` fiziksel çekirdek / `16` mantıksal işlemci, `3801 MHz`), `33,617,727,488` B RAM (`~31.31 GiB`), `Microsoft Windows 11 Home Single Language` (`10.0.26200`)
+- **Embedding Önbelleği & Tohum:** `DualEmbedder` (FP32 `BGESmallENV15` + INT8 `BGESmallENV15Q`, `DEFAULT_QUERY_MAX_TOKENS=64`, `DEFAULT_MAX_VECTOR_QUERY_BYTES=200`, `DEFAULT_MAX_BM25_QUERY_BYTES=4096`, `DEFAULT_MAX_BM25_TERMS=32`) salt okunur yerel önbellekten (`%LOCALAPPDATA%\s-recall\fastembed_cache`) ağ erişimi olmadan yüklendi (`init_ms = 569.3 ms`). Sentetik tohum: `0x53524543414C4C32`.
+- **Boşta Kanıtı (`benchmarks/results/2026-11-21/idle_checks.log`):**
+  - `PRE_CORE_GUARD_SEARCH` (`11:51:05Z`): `active_build_or_app_procs=0`, `cpu_load_pct=1` → `POST_CORE_GUARD_SEARCH` (`11:51:32Z`): `active=0`, `cpu_load_pct=4`
+  - `PRE_DUAL_EMBEDDER` (`11:52:19Z`): `active_build_or_app_procs=0`, `cpu_load_pct=0` → `POST_DUAL_EMBEDDER` (`11:54:23Z`): `active=0`, `cpu_load_pct=3`
+  - `PRE_OVERLAY_MEMORY_V011` (`11:54:26Z`): `active_build_or_app_procs=0`, `cpu_load_pct=0` → `POST_OVERLAY_MEMORY_V011` (`11:55:02Z`): `active=0`, `cpu_load_pct=3`
+- **Çalıştırılan Tek Satır Komutlar:**
+  - `cargo run --manifest-path benchmarks/Cargo.toml --release --offline -- --out-dir benchmarks\results\2026-11-21`
+  - `cargo run --manifest-path benchmarks/Cargo.toml --release --features fastembed --offline -- --only dual --out-dir benchmarks\results\2026-11-21`
+  - `powershell -ExecutionPolicy Bypass -File benchmarks\measure_overlay_memory.ps1 -WaitSeconds 10 -SearchCount 20 -Tag release_v011 -OutDir benchmarks\results\2026-11-21`
+- **Ham Çıktı Dosyaları:**
+  - `benchmarks/results/2026-11-21/summary_core.json`, `summary_core.txt`, `raw_samples_core.csv`
+  - `benchmarks/results/2026-11-21/summary_dual.json`, `summary_dual.txt`, `raw_samples_dual.csv`
+  - `benchmarks/results/2026-11-21/overlay_memory_release_v011.json`, `overlay_memory_release_v011.txt`
+  - `benchmarks/results/2026-11-21/idle_checks.log`
+
+---
+
+### 1. Tekil Sorgu Gömme FP32 — Uzunluk & Türkçe Eğrisi (`DualEmbedder::embed_one`, `DEFAULT_QUERY_MAX_TOKENS = 64`)
+
+Hedef SLA (`AGENT_CONTRACTS.md`): **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb_guarded` çağrıda `s_core::truncate_query_prefix(q, DEFAULT_MAX_VECTOR_QUERY_BYTES)` [`200 B`] uygulayarak zamanlar; diğer satırlar doğrudan `embed_one(q)` ölçümüdür.)
+
+| Senaryo | Ort. Girdi (B / char) | Isınma | Örnek | p50 (ms) | p95 (ms) | p99 (ms) | Min (ms) | Maks (ms) | Ort. (ms) | SLA (`p95 < 20 ms`) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `dual_fp32_embed_one_query_64b` | 60 / 60 | 20 | 300 | 8.88 | 11.76 | 13.64 | 6.53 | 16.13 | 9.11 | **PASS** |
+| `dual_fp32_embed_one_short_200b` | 195 / 195 | 20 | 300 | 17.02 | 19.15 | 19.88 | 14.47 | 22.23 | 17.11 | **PASS** |
+| `dual_fp32_embed_one_4kb_guarded` | 4091 → 196 eff B | 20 | 300 | 17.29 | 19.39 | 20.14 | 14.51 | 23.35 | 17.40 | **PASS** (`-77.98%` vs v0.1.0 4KB) |
+| `dual_fp32_embed_one_query_256b` | 252 / 252 | 20 | 300 | 19.16 | 21.23 | 21.67 | 15.98 | 23.05 | 19.18 | **FAIL** (`>= 20 ms`) |
+| `dual_fp32_embed_one_tr_256b` | 250 / 217 (TR UTF-8) | 20 | 300 | 20.82 | 22.10 | 24.27 | 19.44 | 27.23 | 20.94 | **FAIL** (`>= 20 ms`) |
+| `dual_fp32_embed_one_query_512b` | 507 / 507 | 20 | 300 | 20.83 | 22.15 | 24.58 | 19.42 | 25.89 | 20.93 | **FAIL** (`>= 20 ms`) |
+| `dual_fp32_embed_one_medium_4kb` | 4091 / 4091 (64 tok tavanı) | 10 | 300 | 21.98 | 23.35 | 24.97 | 20.54 | 27.32 | 22.08 | **FAIL** (`>= 20 ms`) |
+
+- **Gözlem:** `DEFAULT_QUERY_MAX_TOKENS=64` tek başına 4 KB girdinin `p95` gecikmesini `88.06 ms` → `23.35 ms` seviyesine düşürse de `20.0 ms` SLA'yı geçememektedir; `256 B` İngilizce (`21.23 ms`), `256 B` Türkçe (`22.10 ms`) ve `512 B` (`22.15 ms`) de `>= 20 ms` olduğu için `DEFAULT_MAX_VECTOR_QUERY_BYTES = 200` + `truncate_query_prefix` ön kesmesi (`19.39 ms` **PASS**) gerekliliği ampirik olarak doğrulandı.
+
+---
+
+### 2. Toplu İndeksleme INT8 & Uçtan Uca Hibrit Arama (`DualEmbedder`, 1000 Olay)
+
+`dual_int8_embed_batch_*` içinde toplu indeksleme oturumu `512` token penceresinde tutulur. `dual_e2e_1k_*` ısınma turunda `hybrid_search_detailed` ile `semantic_used=true` ve `query_truncated` (`kısa=false`, `4kb=true`) doğrulandı (`open_encrypted`: geçici dizin, sentetik 256-bit anahtar, `open_ms=50.1`, `db_bytes=2,248,704`).
+
+| Senaryo | Mod / Boyut | Ingest (ms) | Isınma | Örnek | p50 (ms) | p95 (ms) | p99 (ms) | Min (ms) | Maks (ms) | Ort. (ms) | Hedef |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `dual_int8_embed_batch_16x200b` | `16 × ≈200 B` INT8 | – | 10 | 100 | 126.44 | 133.21 | 136.12 | 117.23 | 137.20 | 126.23 | – |
+| `dual_int8_embed_batch_64x200b` | `64 × ≈200 B` INT8 | – | 5 | 50 | 565.80 | 584.50 | 615.80 | 528.22 | 615.80 | 564.49 | – |
+| `dual_e2e_1k_in_memory` | `in_memory`, `avg=25 B` | 6373.7 | 15 | 100 | 12.31 | 14.74 | 14.98 | 10.63 | 15.75 | 12.50 | – |
+| `dual_e2e_1k_in_memory_long_4kb` | `in_memory`, `avg=4091 B` | 6373.7 | 15 | 100 | 26.25 | 29.60 | 30.66 | 22.52 | 30.78 | 26.45 | **FAIL** (`p95 > 25 ms`) |
+| `dual_e2e_1k_encrypted` | `open_encrypted`, `avg=25 B` | 6971.2 | 15 | 100 | 44.42 | 54.15 | 57.77 | 37.87 | 63.46 | 45.57 | – |
+| `dual_e2e_1k_encrypted_long_4kb` | `open_encrypted`, `avg=4091 B` | 6971.2 | 15 | 100 | 89.20 | 95.55 | 100.68 | 83.49 | 105.44 | 89.98 | **FAIL** (`p95 > 45 ms`) |
+
+---
+
+### 3. `s_guard::process` & `s_core::MemoryStore::hybrid_search` (4 KB Uzun BM25 Dahil)
+
+`hybrid_search` ölçümleri `DeterministicBenchEmbedder` (`baseline p50=0.60 µs, p95=0.70 µs, p99=0.70 µs`) ile yürütüldü; v0.1.1'de eklenen `hybrid_search_10k_bm25_long_4kb`, `10,000` olaylı BM25-only depoda `32` tekil terime bölünen ~4 KB (`avg_query_bytes=4092`) FTS5 OR sorgusunu ölçer.
+
+| Senaryo | Isınma | Örnek | p50 (µs) | p95 (µs) | p99 (µs) | Min (µs) | Maks (µs) | Ort. (µs) | Not / Hedef |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `s_guard_short_200b_no_pii` | 100 | 1000 | 65.90 | 75.20 | 122.70 | 61.60 | 345.70 | 68.29 | `avg=195 B, red=0.0` |
+| `s_guard_short_200b_pii_heavy` | 100 | 1000 | 88.00 | 112.30 | 274.40 | 66.90 | 5068.60 | 97.95 | `avg=188 B, red=5.7` |
+| `s_guard_typical_1kb_no_pii` | 100 | 1000 | 142.90 | 236.40 | 391.20 | 131.50 | 1565.10 | 158.06 | `avg=1019 B, red=0.0` |
+| `s_guard_typical_1kb_pii_heavy` | 100 | 1000 | 310.60 | 537.70 | 662.50 | 222.70 | 762.20 | 346.52 | `avg=1010 B, red=30.9` |
+| `s_guard_medium_4kb_no_pii` | 50 | 500 | 420.50 | 714.40 | 756.60 | 400.00 | 1077.60 | 466.77 | `avg=4091 B, red=0.0` |
+| `s_guard_medium_4kb_pii_heavy` | 50 | 500 | 1089.30 | 1527.00 | 1753.80 | 968.20 | 3473.40 | 1162.22 | `avg=4082 B, red=125.3` |
+| `s_guard_long_64kb_no_pii` | 20 | 200 | 6791.10 | 10356.60 | 12803.00 | 6139.90 | 13175.30 | 7429.02 | `avg=65532 B, red=0.0` |
+| `s_guard_long_64kb_pii_heavy` | 20 | 200 | 40105.10 | 47085.00 | 58201.50 | 34886.30 | 94031.70 | 40976.79 | `avg=65522 B, red=2007.5` |
+| `s_guard_dropped_blacklisted_200b` | 100 | 1000 | 43.50 | 69.10 | 78.20 | 30.80 | 159.50 | 46.54 | `DROP` |
+| `synthetic_query_embedder_baseline` | 50 | 500 | 0.60 | 0.70 | 0.70 | 0.50 | 0.70 | 0.61 | `embed_one` tabanı |
+| `hybrid_search_1k_bm25_only` | 30 | 300 | 1256.00 | 2015.90 | 2527.10 | 721.90 | 2755.70 | 1337.65 | `events=1000, ingest=76.2 ms` |
+| `hybrid_search_1k_vector_hybrid` | 30 | 300 | 2287.20 | 2873.60 | 3245.60 | 1679.60 | 3331.50 | 2344.11 | `events=1000, ingest=113.6 ms` |
+| `hybrid_search_10k_bm25_only` | 20 | 200 | 2566.40 | 3729.50 | 5478.30 | 1087.40 | 46206.80 | 2812.74 | `events=10000, avg_q=25 B` |
+| `hybrid_search_10k_vector_hybrid` | 20 | 200 | 10372.30 | 12713.10 | 13600.30 | 8783.40 | 14629.90 | 10635.33 | `events=10000, avg_q=25 B` |
+| `hybrid_search_10k_bm25_long_4kb` | 20 | 200 | **18008.30** (`18.01 ms`) | **24816.50** (`24.82 ms`) | **27728.00** (`27.73 ms`) | 15730.40 | 28061.10 | 18727.11 | **FAIL** (`p95 > 5 ms`, `avg_q=4092 B`) |
+
+---
+
+### 4. Release Overlay `'20 arama'` Doğrulaması & Bellek (`synapse-mind.exe` — `fastembed` Etkin)
+
+- **İzolasyon & Gerçek Veri Koruma Kanıtı:**
+  - `LOCALAPPDATA` ve `WEBVIEW2_USER_DATA_FOLDER` geçici `Temp\synapse-mind-bench-appdata-870c524d90d2493399ab9bc2081949c4` klasörüne yönlendirildi; `FASTEMBED_CACHE_DIR` salt okunur önbelleğe (`%LOCALAPPDATA%\s-recall\fastembed_cache`) bağlandı.
+  - İzole veri üretimi: `isolated_db_present=True` (`SynapseMind\memory.db` `86,016` B), `isolated_key_present=True` (`SynapseMind\key.bin` `262` B).
+  - Gerçek kullanıcı verisi (`%LOCALAPPDATA%\SynapseMind`): **`real_user_data_untouched=True`** (`key.bin` `262` B `2026-11-20T09:08:12Z`, `memory.db` `49,725,440` B `2026-11-20T20:48:38Z` koşu öncesi/sonrası değişmedi).
+- **20 Arama Uygulamaya Ulaşma Kanıtı (`search_verify_passed=True`):**
+  - Gönderim yolu: `search_method=post_message_render_hwnd`, `queries_dispatched=20/20`.
+  - UIA arama kutusu doğrulaması (`#search-input` `ValuePattern == query`): **`queries_input_matched=20/20`**.
+  - UIA durum metni doğrulaması (`#status-text` `"Hazır"` → `"0 sonuç"`, gözlem aralıkları `231.4–417.5 ms`): **`queries_verified_in_app=20/20`**.
+  - Rust host CPU artışı (`after_10s` → `after_20_searches`): **`host_cpu_delta_search_ms = 812.50 ms`** (`953.12 ms → 1765.62 ms`; v0.1.0 Sprint 4b'de `0.00 ms` idi).
+  - Hafıza Paneli (`panel_trigger=uia_button_invoke_render`, `panel_found=True`, `panel_visible=True`) içinde `SearchLatencyTracker` göstergesi (`#kpi-last-search`): **`panel_last_search_text = "0.4 ms"`** (`panel_last_search_confirmed=True`).
+  - Tepsi ve Stderr: `tray_evidence_status=process_tray_window` (`top|cls=tray_icon_app|title=|vis=False`), `stderr`: `WDA_EXCLUDEFROMCAPTURE` + `Mica`.
+
+| Süreç / Rol | Aşama | Adet | PID | Working Set (MB) | Private Memory (MB) | CPU (ms) | Hedef (`< 50 MB`) |
+|---|---|---:|---:|---:|---:|---:|---|
+| `synapse-mind.exe` (`rust_core_daemon`) | `10 sn` sonrası | 1 | `121428` | **273.63** | **241.83** | 953.12 | **FAIL** (`fastembed` FP32+INT8 yüklü) |
+| `synapse-mind.exe` (`rust_core_daemon`) | `20` arama sonrası | 1 | `121428` | **275.58** | **242.13** | 1765.62 | **FAIL** (`fastembed` FP32+INT8 yüklü) |
+| `synapse-mind.exe` (`rust_core_daemon`) | Hafıza Paneli açık | 1 | `121428` | **279.70** | **246.03** | 1828.12 | **FAIL** (`fastembed` FP32+INT8 yüklü) |
+| `synapse-mind.exe` (`uia_worker`) | `10 sn` / `20` arama / Panel | 1 | `93428` | 18.25 / 18.25 / 18.20 | 3.32 / 3.32 / 3.22 | 15.62 | Hedef dışı |
+| `msedgewebview2.exe` toplamı | `10 sn` / `20` arama / Panel | 6 / 6 / 7 | – | 386.96 / 413.11 / 596.74 | 185.78 / 199.86 / 337.05 | – | Hedef dışı |
+| **Birleşik Süreç Ağacı (`Total`)** | `10 sn` / `20` arama / Panel | 8 / 8 / 9 | – | **678.85 / 706.94 / 894.64** | **430.93 / 445.32 / 586.31** | – | Bilgilendirme |
+
+> **Bellek Farkı Notu:** v0.1.0 Sprint 4b ikilisi (`17.07 MiB`, `DevHashEmbedder`) ana süreçte `36.98–43.48 MB` WS ile `< 50 MB` hedefini **PASS** ediyordu; v0.1.1 yayın ikilisi (`45.3 MB`, `--features fastembed`) başlatma sırasında FP32 + INT8 `DualEmbedder` modellerini işlem içine yüklediği için Rust Core Daemon Working Set'i `273.63–279.70 MB` (`Private 241.83–246.03 MB`) seviyesine çıkmakta ve `< 50 MB` hedefini **FAIL** etmektedir.
+>
+> **Güncelleme (kullanıcı kararı, 21.11.2026; orkestratör ölçümü):** uygulama tek FP32 oturum + ORT CPU arenası kapalı + boşta model boşaltma + çalışma kümesi iadesi kullanır. Deterministik ölçüm: `fastembed,gate2-hooks` yayın derlemesi, izole LOCALAPPDATA, `--gate2-pause-capture --gate2-idle-unload-secs=60`, 15 sn aralıklı ana süreç örnekleri (tek koşu, p50/p95 değil):
+>
+> | Evre | Working Set (MB) | Private (MB) | Hedef |
+> |---|---:|---:|---|
+> | Model yüklenmeden önce (t+15–60 s) | 49,0–49,1 | 18,3–18,5 | |
+> | Model yüklü (t+75–120 s) | 207,5 | 169,5–169,6 | ~200 MB altı: sınırda |
+> | Boşaltma sonrası (t+135 s) | 68,7 | 31,6 | |
+> | Çalışma kümesi iadesi sonrası (t+150–210 s) | 1,6–4,3 | 31,6 | boşta < 50 MB: **PASS** |
+>
+> Gerçek masaüstünde yapılan iki 11–13 dk'lık ölçüm geçersizdir: yakalanan pencere olayları boşta sayacını sıfırladı. Betik: `idle_unload_det.ps1` (`komutlar.txt`).
+
+---
+
 ## Sprint 4b Yeniden Ölçüm (gömülü arayüz, v0.1.0) — 2026-11-20
 
 ### Ortam, Git Durumu ve Boşta Kanıtı

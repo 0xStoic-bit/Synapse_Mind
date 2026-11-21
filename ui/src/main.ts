@@ -17,6 +17,16 @@ export interface HitDto {
   causality_chain: EdgeDto[];
 }
 
+export type EmbedderStateKind = "not_downloaded" | "downloading" | "ready" | "failed";
+
+export interface EmbedderStatusDto {
+  state: EmbedderStateKind;
+  bytes: number | null;
+  total: number | null;
+  progress_pct: number | null;
+  message: string | null;
+}
+
 const DEBOUNCE_MS = 150;
 const SEARCH_LIMIT = 12;
 
@@ -25,6 +35,52 @@ const resultsContainer = document.getElementById("results-container") as HTMLEle
 const statusText = document.getElementById("status-text") as HTMLElement;
 const demoBadge = document.getElementById("demo-badge") as HTMLElement;
 const openPanelBtn = document.getElementById("open-panel-btn") as HTMLButtonElement;
+const embedderStrip = document.getElementById("embedder-strip") as HTMLElement;
+const embedderStripText = document.getElementById("embedder-strip-text") as HTMLElement;
+const embedderStripPct = document.getElementById("embedder-strip-pct") as HTMLElement;
+const embedderStripTrack = document.getElementById("embedder-strip-track") as HTMLElement;
+const embedderStripFill = document.getElementById("embedder-strip-fill") as HTMLElement;
+
+function applyEmbedderStatus(status: EmbedderStatusDto): void {
+  if (status.state === "ready") {
+    embedderStrip.classList.add("hidden");
+    embedderStrip.removeAttribute("data-state");
+    return;
+  }
+
+  embedderStrip.classList.remove("hidden");
+  embedderStrip.setAttribute("data-state", status.state);
+
+  if (status.state === "failed") {
+    embedderStripText.textContent =
+      status.message ?? "Anlamsal arama kapalı, kelime araması çalışıyor";
+    embedderStripPct.classList.add("hidden");
+    embedderStripTrack.classList.add("hidden");
+    embedderStripTrack.classList.remove("indeterminate");
+    embedderStripTrack.removeAttribute("aria-valuenow");
+    return;
+  }
+
+  embedderStripText.textContent =
+    status.state === "downloading"
+      ? "Anlamsal arama modeli indiriliyor · kelime araması aktif"
+      : "Anlamsal arama modeli hazırlanıyor · kelime araması aktif";
+  embedderStripTrack.classList.remove("hidden");
+
+  if (status.progress_pct !== null) {
+    const clamped = Math.max(0, Math.min(100, status.progress_pct));
+    embedderStripTrack.classList.remove("indeterminate");
+    embedderStripTrack.setAttribute("aria-valuenow", String(clamped));
+    embedderStripFill.style.width = `${clamped}%`;
+    embedderStripPct.textContent = `%${clamped}`;
+    embedderStripPct.classList.remove("hidden");
+  } else {
+    embedderStripTrack.classList.add("indeterminate");
+    embedderStripTrack.removeAttribute("aria-valuenow");
+    embedderStripFill.style.width = "";
+    embedderStripPct.classList.add("hidden");
+  }
+}
 
 let debounceTimer: number | undefined;
 let activeRequestSeq = 0;
@@ -233,6 +289,29 @@ window.addEventListener("keydown", (event: KeyboardEvent) => {
 
 async function bootstrap(): Promise<void> {
   searchInput.focus();
+
+  if (import.meta.env.DEV) {
+    const params = new URLSearchParams(window.location.search);
+    const embedPreview = params.get("embed");
+    if (embedPreview === "downloading") {
+      applyEmbedderStatus({
+        state: "downloading",
+        bytes: 41_600_000,
+        total: 67_100_000,
+        progress_pct: 62,
+        message: null,
+      });
+    } else if (embedPreview === "failed") {
+      applyEmbedderStatus({
+        state: "failed",
+        bytes: null,
+        total: null,
+        progress_pct: null,
+        message: "Anlamsal arama kapalı, kelime araması çalışıyor",
+      });
+    }
+  }
+
   try {
     const demo = await invoke<boolean>("is_demo_mode");
     demoBadge.classList.toggle("hidden", !demo);
@@ -241,6 +320,16 @@ async function bootstrap(): Promise<void> {
   }
 
   try {
+    const status = await invoke<EmbedderStatusDto>("get_embedder_status");
+    applyEmbedderStatus(status);
+  } catch {
+    // Ignore outside Tauri runtime.
+  }
+
+  try {
+    await listen<EmbedderStatusDto>("embedder://status", (event) => {
+      applyEmbedderStatus(event.payload);
+    });
     await listen("overlay://focus", () => {
       searchInput.focus();
       searchInput.select();

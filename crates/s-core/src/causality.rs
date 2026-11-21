@@ -1,6 +1,6 @@
 //! Rule-based causality linking between sequential `MaskedMemoryBlock` events.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::{Connection, Transaction, params};
 use s_types::{AppContext, CausalityEdge, EventSource, MaskedMemoryBlock};
@@ -207,74 +207,163 @@ pub(crate) fn load_causality_chain(
     max_depth: usize,
     max_edges: usize,
 ) -> Result<Vec<CausalityEdge>> {
-    if max_depth == 0 || max_edges == 0 {
-        return Ok(Vec::new());
+    let mut chains = load_causality_chains_batch(conn, &[anchor_event_id], max_depth, max_edges)?;
+    Ok(chains.pop().unwrap_or_default())
+}
+
+/// Reconstructs bounded bidirectional causality chains for all `anchors` in order,
+/// batching frontier edge queries per BFS depth across all anchors to minimize SQLite round-trips.
+pub(crate) fn load_causality_chains_batch(
+    conn: &Connection,
+    anchors: &[u64],
+    max_depth: usize,
+    max_edges: usize,
+) -> Result<Vec<Vec<CausalityEdge>>> {
+    const CHUNK_SIZE: usize = 256;
+
+    if anchors.is_empty() || max_depth == 0 || max_edges == 0 {
+        return Ok(vec![Vec::new(); anchors.len()]);
     }
 
-    let mut visited_nodes = HashSet::new();
-    let mut seen_edges: HashSet<(u64, u64, String)> = HashSet::new();
-    let mut chain = Vec::new();
-    let mut queue = VecDeque::new();
-
-    visited_nodes.insert(anchor_event_id);
-    queue.push_back((anchor_event_id, 0_usize));
-
-    let mut stmt = conn.prepare_cached(
-        "SELECT source_event_id, target_event_id, relationship, time_delta_seconds
-         FROM causality_edges
-         WHERE source_event_id = ?1 OR target_event_id = ?1
-         ORDER BY source_event_id ASC, target_event_id ASC, relationship ASC",
-    )?;
-
-    while let Some((node_id, depth)) = queue.pop_front() {
-        if depth >= max_depth || chain.len() >= max_edges {
-            continue;
-        }
-        let node_i64 = i64::try_from(node_id)
-            .map_err(|_| CoreError::IntegerOverflow("node_id exceeds i64::MAX"))?;
-        let rows = stmt.query_map([node_i64], |row| {
-            let src: i64 = row.get(0)?;
-            let dst: i64 = row.get(1)?;
-            let relationship: String = row.get(2)?;
-            let delta: i64 = row.get(3)?;
-            Ok((src, dst, relationship, delta))
-        })?;
-
-        for row in rows {
-            if chain.len() >= max_edges {
-                break;
-            }
-            let (src_i64, dst_i64, relationship, delta_i64) = row?;
-            let src = u64::try_from(src_i64)
-                .map_err(|_| CoreError::IntegerOverflow("negative source_event_id in DB"))?;
-            let dst = u64::try_from(dst_i64)
-                .map_err(|_| CoreError::IntegerOverflow("negative target_event_id in DB"))?;
-            let delta = u32::try_from(delta_i64)
-                .map_err(|_| CoreError::IntegerOverflow("time_delta_seconds out of u32 range"))?;
-
-            if seen_edges.insert((src, dst, relationship.clone())) {
-                chain.push(CausalityEdge {
-                    source_event_id: src,
-                    target_event_id: dst,
-                    relationship,
-                    time_delta_seconds: delta,
-                });
-            }
-
-            let neighbor = if src == node_id { dst } else { src };
-            if visited_nodes.insert(neighbor) {
-                queue.push_back((neighbor, depth + 1));
-            }
+    let mut fetched_nodes: HashSet<u64> = HashSet::new();
+    let mut frontier: Vec<u64> = Vec::with_capacity(anchors.len());
+    for &anchor in anchors {
+        if fetched_nodes.insert(anchor) {
+            frontier.push(anchor);
         }
     }
 
-    chain.sort_by(|a, b| {
-        a.source_event_id
-            .cmp(&b.source_event_id)
-            .then_with(|| a.target_event_id.cmp(&b.target_event_id))
-            .then_with(|| a.relationship.cmp(&b.relationship))
-    });
-    Ok(chain)
+    let mut seen_global_edges: HashSet<(u64, u64, String)> = HashSet::new();
+    let mut adj: HashMap<u64, Vec<CausalityEdge>> = HashMap::new();
+
+    for _depth in 0..max_depth {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next_frontier = Vec::new();
+        for chunk in frontier.chunks(CHUNK_SIZE) {
+            let bucket_len = chunk.len().next_power_of_two().min(CHUNK_SIZE);
+            let mut id_params: Vec<i64> = Vec::with_capacity(bucket_len);
+            for &id in chunk {
+                id_params.push(
+                    i64::try_from(id)
+                        .map_err(|_| CoreError::IntegerOverflow("node_id exceeds i64::MAX"))?,
+                );
+            }
+            if let Some(&pad_id) = id_params.first() {
+                id_params.resize(bucket_len, pad_id);
+            }
+            let placeholders = vec!["?"; id_params.len()].join(",");
+            let sql = format!(
+                "SELECT source_event_id, target_event_id, relationship, time_delta_seconds
+                 FROM causality_edges
+                 WHERE source_event_id IN ({placeholders})
+                 UNION ALL
+                 SELECT source_event_id, target_event_id, relationship, time_delta_seconds
+                 FROM causality_edges
+                 WHERE target_event_id IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(id_params.iter().chain(id_params.iter())),
+                |row| {
+                    let src: i64 = row.get(0)?;
+                    let dst: i64 = row.get(1)?;
+                    let relationship: String = row.get(2)?;
+                    let delta: i64 = row.get(3)?;
+                    Ok((src, dst, relationship, delta))
+                },
+            )?;
+            for row in rows {
+                let (src_i64, dst_i64, relationship, delta_i64) = row?;
+                let src = u64::try_from(src_i64)
+                    .map_err(|_| CoreError::IntegerOverflow("negative source_event_id in DB"))?;
+                let dst = u64::try_from(dst_i64)
+                    .map_err(|_| CoreError::IntegerOverflow("negative target_event_id in DB"))?;
+                let delta = u32::try_from(delta_i64).map_err(|_| {
+                    CoreError::IntegerOverflow("time_delta_seconds out of u32 range")
+                })?;
+
+                if seen_global_edges.insert((src, dst, relationship.clone())) {
+                    let edge = CausalityEdge {
+                        source_event_id: src,
+                        target_event_id: dst,
+                        relationship,
+                        time_delta_seconds: delta,
+                    };
+                    adj.entry(src).or_default().push(edge.clone());
+                    if src != dst {
+                        adj.entry(dst).or_default().push(edge);
+                    }
+                    if fetched_nodes.insert(src) {
+                        next_frontier.push(src);
+                    }
+                    if fetched_nodes.insert(dst) {
+                        next_frontier.push(dst);
+                    }
+                }
+            }
+        }
+        frontier = next_frontier;
+    }
+
+    for edges in adj.values_mut() {
+        edges.sort_by(|a, b| {
+            a.source_event_id
+                .cmp(&b.source_event_id)
+                .then_with(|| a.target_event_id.cmp(&b.target_event_id))
+                .then_with(|| a.relationship.cmp(&b.relationship))
+        });
+    }
+
+    let mut results = Vec::with_capacity(anchors.len());
+    for &anchor in anchors {
+        let mut visited_nodes = HashSet::new();
+        let mut seen_edges: HashSet<(u64, u64, String)> = HashSet::new();
+        let mut chain = Vec::new();
+        let mut queue = VecDeque::new();
+
+        visited_nodes.insert(anchor);
+        queue.push_back((anchor, 0_usize));
+
+        while let Some((node_id, depth)) = queue.pop_front() {
+            if depth >= max_depth || chain.len() >= max_edges {
+                continue;
+            }
+            if let Some(node_edges) = adj.get(&node_id) {
+                for edge in node_edges {
+                    if chain.len() >= max_edges {
+                        break;
+                    }
+                    if seen_edges.insert((
+                        edge.source_event_id,
+                        edge.target_event_id,
+                        edge.relationship.clone(),
+                    )) {
+                        chain.push(edge.clone());
+                    }
+                    let neighbor = if edge.source_event_id == node_id {
+                        edge.target_event_id
+                    } else {
+                        edge.source_event_id
+                    };
+                    if visited_nodes.insert(neighbor) {
+                        queue.push_back((neighbor, depth + 1));
+                    }
+                }
+            }
+        }
+
+        chain.sort_by(|a, b| {
+            a.source_event_id
+                .cmp(&b.source_event_id)
+                .then_with(|| a.target_event_id.cmp(&b.target_event_id))
+                .then_with(|| a.relationship.cmp(&b.relationship))
+        });
+        results.push(chain);
+    }
+
+    Ok(results)
 }
 
 pub(crate) fn row_to_masked_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<MaskedMemoryBlock> {
