@@ -89,10 +89,10 @@ pub use embedder::fastembed_impl::{
     fastembed_model_id, is_dual_model_cached, is_model_cached,
 };
 pub use embedder::{
-    DEFAULT_BATCH_MAX_TOKENS, DEFAULT_IDLE_UNLOAD_TIMEOUT, DEFAULT_QUERY_MAX_TOKENS, EMBEDDING_DIM,
-    Embedder, EmbedderStatus, MODEL_ID_BGE_SMALL_EN_V15_FP32, MODEL_ID_BGE_SMALL_EN_V15_Q_INT8,
-    MODEL_ID_DEFAULT_CUSTOM, MODEL_ID_DEVHASH, ManagedEmbedder, ManagedEmbedderConfig,
-    StatusListenerId, default_model_cache_dir,
+    DEFAULT_BATCH_MAX_TOKENS, DEFAULT_IDLE_UNLOAD_TIMEOUT, DEFAULT_QUERY_MAX_TOKENS,
+    EMBED_SUB_BATCH_SIZE, EMBEDDING_DIM, Embedder, EmbedderStatus, MODEL_ID_BGE_SMALL_EN_V15_FP32,
+    MODEL_ID_BGE_SMALL_EN_V15_Q_INT8, MODEL_ID_DEFAULT_CUSTOM, MODEL_ID_DEVHASH, ManagedEmbedder,
+    ManagedEmbedderConfig, StatusListenerId, default_model_cache_dir,
 };
 pub use s_types::{AppContext, CausalityEdge, CausalityQueryHit, EventSource, MaskedMemoryBlock};
 pub use store::{

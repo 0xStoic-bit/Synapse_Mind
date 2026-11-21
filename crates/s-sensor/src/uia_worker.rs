@@ -310,11 +310,42 @@ pub(crate) mod win32 {
     /// İşçi öz-zaman-aşımı çıkış kodu.
     const WORKER_TIMEOUT_EXIT: i32 = 124;
 
+    /// Başlatma geri bildirim imlecini (`IDC_APPSTARTING`) kapatır: kendi iş parçacığına
+    /// `WM_NULL` gönderir ve onu `GetMessageW` ile hemen alır. Sistem, ilk `GetMessage`
+    /// çağrısından sonra geri bildirim imlecini kapatır (STARTUPINFO, STARTF_FORCEONFEEDBACK).
+    fn dismiss_launch_feedback_cursor() {
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_NULL,
+        };
+        let mut msg = MSG::default();
+        // SAFETY: `msg` geçerli bir yerel `MSG`; `PeekMessageW` yalnızca bu iş parçacığının
+        // mesaj kuyruğunu oluşturur. Kendi kuyruğumuza gönderilen `WM_NULL` kuyrukta olduğu
+        // için `GetMessageW` bloklamadan hemen döner.
+        unsafe {
+            let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+            if PostThreadMessageW(
+                GetCurrentThreadId(),
+                WM_NULL,
+                Default::default(),
+                Default::default(),
+            )
+            .is_ok()
+            {
+                let _ = GetMessageW(&mut msg, None, 0, 0);
+            }
+        }
+    }
+
     /// İşçi süreç girişi (önceden ısıtılmış tek kullanımlık model):
     /// 1. `SetOaNoCache` + `COM` + `IUIAutomation` kurar (`disable_oleaut_bstr_cache` YALNIZCA burada).
     /// 2. `stdout`'a `SRWR` (veya `SRWE`) yazar ve `stdin`'den 32 baytlık `SRQ1` isteğini bekler.
     /// 3. İstek gelince tek pencereyi okur, `SRW1` çerçevesini yazar ve çıkar (veya ana süreç öldürür).
     pub(crate) fn worker_main() -> ! {
+        // İşçi GUI alt sistemli exe'dir ve hiç pencere açmaz; Windows her işçi başlatıldığında
+        // "uygulama başlıyor" imlecini 5-7 sn gösterir. İlk `GetMessage` bu imleci kapatır.
+        dismiss_launch_feedback_cursor();
+
         // Graft 2: BSTR önbelleği YALNIZCA tek kullanımlık işçi süreçte, UIA öncesi kapatılır.
         disable_oleaut_bstr_cache();
 

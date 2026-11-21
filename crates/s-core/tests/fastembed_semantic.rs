@@ -1296,3 +1296,34 @@ fn fastembed_model_ids_and_encrypted_migration_from_devhash_and_dual_to_single_f
             .any(|w| w == b"PostgreSQL deadlock")
     );
 }
+
+/// Peak-memory probe for the background re-embedding path: 128 long (~512 token) texts
+/// through the app's single-FP32 configuration (CPU arena off). Peak working set is read
+/// externally (see `komutlar.txt`); this test only checks correctness and prints timing.
+#[test]
+#[ignore = "needs cached model; run explicitly for backfill memory measurement"]
+fn backfill_batch_of_long_texts_embeds_all() {
+    let words = [
+        "compiler", "error", "window", "terminal", "invoice", "meeting", "database", "network",
+        "browser", "document", "schedule", "release", "memory", "kernel", "driver", "update",
+    ];
+    let texts: Vec<String> = (0..128)
+        .map(|i| {
+            (0..600)
+                .map(|j| words[(i * 7 + j * 13) % words.len()])
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let backend = FastEmbedBackend::try_new(&FastEmbedConfig {
+        mode: FastEmbedMode::SingleFp32,
+        session_config: vec![("session.enable_cpu_mem_arena".into(), "0".into())],
+        ..FastEmbedConfig::default()
+    })
+    .expect("fastembed backend");
+    let started = Instant::now();
+    let vectors = backend.embed_batch(&refs).expect("embed batch");
+    eprintln!("backfill_probe: 128 texts in {:?}", started.elapsed());
+    assert_eq!(vectors.len(), 128);
+}

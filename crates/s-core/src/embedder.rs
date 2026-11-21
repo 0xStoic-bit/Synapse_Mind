@@ -31,6 +31,16 @@ pub const DEFAULT_QUERY_MAX_TOKENS: usize = 64;
 /// Maximum WordPiece sequence length for batch indexing (`DualEmbedder` batch session & `FastEmbedder`).
 pub const DEFAULT_BATCH_MAX_TOKENS: usize = 512;
 
+/// Maximum number of texts sent to ONNX Runtime in one inference call by
+/// `FastEmbedder::embed_batch`. Larger inputs are split into sequential sub-batches.
+///
+/// Attention activations grow with `batch * heads * seq_len^2` and every text in a call is
+/// padded to the longest one. Measured peak working set for 128 texts at the 512-token
+/// window (single FP32 session, CPU arena off, 21.11.2026): one call 3,351 MB / 20.3 s;
+/// sub-batch 8: 417 MB / 11.7 s; 4: 299 MB / 9.9 s; 2: 238 MB / 12.6 s; 1: 209 MB / 13.4 s.
+/// `1` keeps background re-embedding at the model-loaded footprint (~200 MB budget).
+pub const EMBED_SUB_BATCH_SIZE: usize = 1;
+
 /// Default inactivity duration (`10 minutes`) used when idle session unloading is enabled
 /// via [`ManagedEmbedderConfig`].
 pub const DEFAULT_IDLE_UNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -1493,8 +1503,9 @@ pub mod fastembed_impl {
                 .model
                 .lock()
                 .map_err(|_| CoreError::Embedder("fastembed mutex poisoned".to_owned()))?;
+            // Sub-batch to bound peak attention memory (see `EMBED_SUB_BATCH_SIZE`).
             let vectors = guard
-                .embed(texts, None)
+                .embed(texts, Some(super::EMBED_SUB_BATCH_SIZE))
                 .map_err(|e| CoreError::Embedder(e.to_string()))?;
             if vectors.len() != texts.len() {
                 return Err(CoreError::EmbeddingCountMismatch {

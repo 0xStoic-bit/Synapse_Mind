@@ -5,7 +5,7 @@
 **Bilgisayarının yerel hafızası.** Ne yapıyordun, hangi hatayı aradın, neyi nereye yapıştırdın: `Alt+Space`'e bas, yaz, bul.
 Her şey cihazında kalır. Parolalar, API anahtarları ve kişisel bilgiler diske ulaşmadan bellekte maskelenir.
 
-`v0.1.0` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
+`v0.1.1` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
 
 ![Alt+Space ile arama: "derleme hatası" yazılıyor, nedensellik bağlarıyla sonuçlar geliyor](docs/media/arama.gif)
 
@@ -54,13 +54,13 @@ Tepsi simgesinin ipucu durumu gösterir: `kaydediyor`, `duraklatıldı (N dk)`, 
 | Kapı | Sonuç |
 |---|---|
 | **Gate 1**: PII sızma testi (Core 60, Evasion 40, Blacklist 26, r1/r2 108 vektör, zorunlu kontroller 38/38) | PASS, [kabul edilen risklerle](SECURITY.md) |
-| **Gate 2**: bellek dökümü; nihai ikili, 41 döküm (uygulama, UIA işçisi, panel dahil WebView2) | PASS, sıfır tolerans sınıflarının hepsi 0 |
+| **Gate 2**: bellek dökümü; v0.1.1 ikilisi, 41 döküm (uygulama, UIA işçisi, panel dahil WebView2) | PASS, sıfır tolerans sınıflarının hepsi 0 |
 
 - **Şifreli depo:** SQLCipher, AES-256 (CBC + HMAC-SHA512). Anahtar rastgele üretilir ve Windows DPAPI ile korunur; düz anahtar diske yazılmaz.
 - **Bellek hijyeni:** ham tamponlar işlem biter bitmez `zeroize` ile silinir. Guard her paketten sonra yığını temizler.
 - **UI Automation ayrı süreçte:** Windows'un UIA kitaplığı okuduğu metni kendi tamponlarında sıfırlamadan bırakır. Synapse Mind bu okumayı tek kullanımlık, önceden ısıtılmış bir yardımcı süreçte yapar; süreç öldürülünce Windows belleği geri alır. Ana süreç bu kitaplığı hiç yüklemez.
 - **Kendini kaydetmez:** Synapse Mind'ın kendi pencereleri ve süreçleri sensörde en başta dışlanır; yazdığın aramalar hafızaya girmez.
-- **Ağ yok:** kullanıcı verisi cihazdan çıkmaz. Tek ağ kullanımı, `fastembed` özelliği açıksa modelin bir kez indirilmesidir.
+- **Ağ yok:** kullanıcı verisi cihazdan çıkmaz. Tek ağ kullanımı, anlamsal arama modelinin ilk açılışta bir kez indirilmesidir. İnternet yoksa ya da indirme yarıda kalırsa uygulama çökmez, kelime aramasıyla (BM25) çalışmaya devam eder.
 
 Sınırlar (aynı oturumdaki kötü amaçlı yazılım, pagefile ve hibernasyon, Windows masaüstü yığını) ve kabul edilen riskler: [SECURITY.md](SECURITY.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
@@ -81,6 +81,14 @@ Model 10 dakika kullanılmayınca bellekten boşaltılır, bir sonraki aramada y
 
 ## Kurulum ve derleme
 
+**Kurulum paketi:** `Synapse Mind_0.1.1_x64-setup.exe` (NSIS, yalnızca senin kullanıcın için kurar, yönetici izni istemez). Paket, temiz bilgisayar kurulum testinden sonra GitHub Releases'ta yayımlanacak.
+
+- **İlk açılış:** anlamsal arama modeli (`bge-small-en-v1.5`, yaklaşık 130 MB) bir kez indirilir; ilerleme arayüzde görünür. İndirme bitene kadar arama kelime eşleşmesiyle çalışır, bittiğinde eski kayıtlar arka planda vektörleştirilir.
+- **Windows açılışında başlat:** varsayılan kapalı, Hafıza Paneli'nden açılır.
+- **Kaldırma:** "verilerim silinsin mi?" diye sorar; varsayılan cevap Hayır.
+
+**Kaynaktan derleme:**
+
 **Gereksinimler:** Rust 1.95+, MSVC derleme araçları, [Strawberry Perl](https://strawberryperl.com/) (SQLCipher için OpenSSL derlemesi; `winget install StrawberryPerl.StrawberryPerl`), Node.js ve npm, WebView2 Runtime (Windows 11'de yüklü gelir).
 
 ```powershell
@@ -90,6 +98,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 .\src-tauri\target\release\synapse-mind.exe
 ```
 
+- Kurulum paketi: `cd src-tauri; cargo tauri build --features fastembed` → `src-tauri\target\release\bundle\nsis\`.
 - Arayüz ikilinin içine gömülür (`custom-protocol` varsayılan). İlk release derlemesi OpenSSL ve SQLCipher yüzünden uzun sürer.
 - **Anlamsal arama için** `--features fastembed` ekleyin. Varsayılan derleme gerçek model yerine deterministik bir test gömücüsü kullanır; kelime eşleşmesi çalışır, anlam benzerliği çalışmaz.
 - Veriler: `%LOCALAPPDATA%\SynapseMind\memory.db` (şifreli) ve `key.bin` (DPAPI ile korunan anahtar). `key.bin` silinirse veritabanı açılamaz.
@@ -97,7 +106,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 Geliştirme komutlarının tamamı: [komutlar.txt](komutlar.txt).
 
-## Henüz yok (v0.1.1+)
+## Henüz yok
 
 - OCR görsel yedek (UI Automation ağacı boş pencerelerde metin yakalanmaz)
 - Görsel analizi: panoya kopyalanan görseller ve dosyalar yalnızca üst veri olarak kaydedilir, içerikleri okunmaz
@@ -132,7 +141,7 @@ Ayrıntı için [LICENSE](LICENSE) dosyasının kendisi geçerlidir; bu özet bi
 **Your computer's local memory.** What were you doing, which error did you search for, what did you paste where: press `Alt+Space`, type, find it.
 Everything stays on your device. Passwords, API keys and personal data are masked in memory before anything reaches the disk.
 
-`v0.1.0` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
+`v0.1.1` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
 
 > The demo above uses synthetic data. Synapse Mind's windows are hidden from real screen recordings (`WDA_EXCLUDEFROMCAPTURE`), so the UI was recorded in a browser with sample data. Script: [docs/media/capture.mjs](docs/media/capture.mjs). The UI itself is in Turkish.
 
@@ -168,13 +177,13 @@ The tray tooltip shows the live state: recording, paused (N min), suspended (gam
 | Gate | Result |
 |---|---|
 | **Gate 1**: PII leak test (Core 60, Evasion 40, Blacklist 26, r1/r2 108 vectors, mandatory controls 38/38) | PASS, [with accepted risks](SECURITY.md) |
-| **Gate 2**: memory dump; final binary, 41 dumps (app, UIA worker, WebView2 including the panel) | PASS, every zero-tolerance class at 0 |
+| **Gate 2**: memory dump; v0.1.1 binary, 41 dumps (app, UIA worker, WebView2 including the panel) | PASS, every zero-tolerance class at 0 |
 
 - **Encrypted store:** SQLCipher, AES-256 (CBC + HMAC-SHA512). The key is random and protected with Windows DPAPI; the plain key is never written to disk.
 - **Memory hygiene:** raw buffers are wiped with `zeroize` as soon as they are processed. The guard clears its stack after every packet.
 - **UI Automation in a separate process:** Windows' UIA library leaves the text it reads in its own buffers without wiping them. Synapse Mind performs this read in a single-use, pre-warmed helper process; when the process is killed, Windows reclaims its memory. The main process never loads that library.
 - **Does not record itself:** Synapse Mind's own windows and processes are excluded at the very start of the sensor; your searches never enter the memory.
-- **No network:** user data never leaves the device. The only network use is a one-time model download when the `fastembed` feature is enabled.
+- **No network:** user data never leaves the device. The only network use is a one-time download of the semantic search model on first launch. Without internet, or if the download is interrupted, the app does not crash and keeps working with keyword search (BM25).
 
 Limits (malware in the same session, pagefile and hibernation, the Windows desktop heap) and accepted risks: [SECURITY.md](SECURITY.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (in Turkish).
 
@@ -193,7 +202,15 @@ Idle machine, release build; AMD Ryzen 7 8845HS, Windows 11. Full table: [benchm
 
 The model is unloaded after 10 minutes without use and reloaded on the next search. Long 4 KB queries are truncated to 200 bytes; embedding p95 19.4 ms.
 
-## Build
+## Install and build
+
+**Installer:** `Synapse Mind_0.1.1_x64-setup.exe` (NSIS, installs for your user only, no admin rights needed). It will be published on GitHub Releases after the clean-machine install test.
+
+- **First launch:** the semantic search model (`bge-small-en-v1.5`, about 130 MB) is downloaded once, with progress shown in the UI. Until it finishes, search uses keyword matching; afterwards older records are embedded in the background.
+- **Start with Windows:** off by default, can be turned on from the Memory Panel.
+- **Uninstall:** asks whether to delete your data; the default answer is No.
+
+**Build from source:**
 
 **Requirements:** Rust 1.95+, MSVC build tools, [Strawberry Perl](https://strawberryperl.com/) (OpenSSL build for SQLCipher; `winget install StrawberryPerl.StrawberryPerl`), Node.js and npm, WebView2 Runtime (preinstalled on Windows 11).
 
@@ -204,6 +221,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 .\src-tauri\target\release\synapse-mind.exe
 ```
 
+- Installer: `cd src-tauri; cargo tauri build --features fastembed` → `src-tauri\target\release\bundle\nsis\`.
 - The UI is embedded in the binary (`custom-protocol` by default). The first release build takes a while because of OpenSSL and SQLCipher.
 - **For semantic search** add `--features fastembed`. The default build uses a deterministic test embedder instead of a real model: keyword matching works, semantic similarity does not.
 - Data: `%LOCALAPPDATA%\SynapseMind\memory.db` (encrypted) and `key.bin` (DPAPI-protected key). If `key.bin` is deleted, the database cannot be opened.
@@ -211,7 +229,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 All development commands: [komutlar.txt](komutlar.txt).
 
-## Not yet (v0.1.1+)
+## Not yet
 
 - OCR visual fallback (no text is captured from windows with an empty UI Automation tree)
 - Image analysis: copied images and files are recorded as metadata only; their content is not read
