@@ -1,6 +1,6 @@
 # Synapse Mind Mimarisi
 
-Sahibi: `s-architect`. Tam tasarım: `SYNAPSE_MIND.md`. Tip kontratı: `crates/s-types/src/lib.rs`.
+Tip kontratı: `crates/s-types/src/lib.rs`.
 
 ## Veri hattı
 ```
@@ -21,7 +21,7 @@ s-sensor ──RawCapturePacket──▶ s-guard ──MaskedMemoryBlock──�
 `s-sensor`, `s-guard`, `s-core` yalnızca `s-types`'a bağımlıdır; birbirlerine doğrudan bağımlı değildir. Kablolama nihai binary'de (Faz 4) yapılır.
 
 ## `s-types` kontratı: Faz 0 donduruldu (2026-11-18, v0.2-ContractSpec)
-Bundan sonra yapılacak değişiklikler için `s-orchestrator` onayı ve BOARD kaydı gerekir.
+Bu tiplerdeki değişiklikler bir ADR ile yapılır.
 
 | Tip | Türetilen traitler | Bellek güvencesi |
 |---|---|---|
@@ -41,10 +41,10 @@ Tüketici kuralları (tip seviyesinde kapatılamaz):
 Açıklama (Sprint 2): `mem::take`/`mem::replace` tamponu kopyalamaz, taşır. Alınan değer hemen Drop'ta zeroize eden bir sarmalayıcıya konuyorsa kabul edilir (ör. s-guard `Held`, `Zeroizing<String>`). Yasak olan, alınan değerin zeroize edilmeyen bir yerde yaşamaya devam etmesidir.
 
 ## Karar kayıtları (ADR)
-Sahibi: `s-architect`. Tarih: 2026-11-18 (Sprint 2, temel commit 63be9f1). Sprint 2'de `s-types` donuk; aşağıdaki kod değişiklikleri yalnızca belirtilen sprintte uygulanır.
+Tarih: 2026-11-18 (Sprint 2, temel commit 63be9f1). Sprint 2'de `s-types` donuk; aşağıdaki kod değişiklikleri yalnızca belirtilen sprintte uygulanır.
 
 ### ADR-001 `event_id` ataması: **ONAY (koşullu)**
-Karar (orkestratör): s-guard `run_with_start_id(rx, tx, start_id)`, `run` = `run_with_start_id(.., 0)`; s-core `MemoryStore::next_event_id() -> u64` = `MAX(event_id)+1`; kablolama `start_id = store.next_event_id()`.
+Karar: s-guard `run_with_start_id(rx, tx, start_id)`, `run` = `run_with_start_id(.., 0)`; s-core `MemoryStore::next_event_id() -> u64` = `MAX(event_id)+1`; kablolama `start_id = store.next_event_id()`.
 
 - **Tek süreç, tek yazar:** Doğru varsayım. Kimlik ataması tek bir guard görevinde, kalıcılık tek bir ingestion görevinde yapılıyor. Ancak s-core `ingest_block` `ON CONFLICT(event_id) DO UPDATE` kullanıyor; bu yüzden bir çakışma hata vermez, **eski olayın üzerine sessizce yazar** (eski kenarlar yeni içeriğe bağlanır). Bu yüzden aşağıdaki koşullar bağlayıcıdır.
 - **Çökme sonrası boşluklar:** Sorun değil. `Dropped` kararları zaten kimlik tüketiyor, bu yüzden boşluk normal. Kanalda bekleyen ve kaybolan bloklar DB'ye hiç yazılmadığı için yeniden başlatmada `MAX+1` aynı numaraları güvenle yeniden kullanır. `event_id` yalnızca kimlik ve eşitlik bozucu olarak kullanılır; sayaç veya yoğunluk anlamı taşımaz.
@@ -77,7 +77,7 @@ struct SearchRequest { query: String, k: u32 } // sunucu tarafında k 1..=50'ye 
 - `query` hiçbir zaman loglanmaz (kullanıcının yazdığı arama metni de hassas veridir).
 
 ### ADR-003 Kaynak olay türü metadata alanı: **UYGULANDI (Sprint 3 Aşama A, temel 52126bb)**
-Uygulama notu: Orkestratör talimatı "mantık değişikliği yok" olduğu için `is_clipboard_context` sezgisi **kaldırılmadı**. Pano olayı tespiti artık `source == Clipboard || is_clipboard_context(..)` ile yapılıyor; ≥16 karakterlik içerik eşleşmesi ve `text_hash` eşitliği yedek olarak duruyor. Sezginin kaldırılması (aşağıdaki tablodaki hedef) graph-vector-core'a ayrı bir iş olarak bırakıldı. Testlerdeki varsayılan `source` değeri `Accessibility`.
+Uygulama notu: kapsam "mantık değişikliği yok" ile sınırlandığı için `is_clipboard_context` sezgisi **kaldırılmadı**. Pano olayı tespiti artık `source == Clipboard || is_clipboard_context(..)` ile yapılıyor; ≥16 karakterlik içerik eşleşmesi ve `text_hash` eşitliği yedek olarak duruyor. Sezginin kaldırılması (aşağıdaki tablodaki hedef) graph-vector-core'a ayrı bir iş olarak bırakıldı. Testlerdeki varsayılan `source` değeri `Accessibility`.
 Gerekçe: s-core şu anda `pasted_from_clipboard` kenarını süreç adı ve başlıktaki `"clipboard"` sezgisinden ve ≥16 karakterlik metin eşleşmesinden çıkarıyor. Sezgi pano olaylarında neredeyse hiç tetiklenmiyor (pano olayının `process_name` değeri odaktaki süreç) ve kullanıcı kontrolündeki bir başlıkla tetiklenebiliyor. Kısa kopyala-yapıştır işlemleri de kaçıyor.
 
 **`EventKind` aynen taşınmaz.** Bunun yerine **alansız (fieldless), kaba taneli** bir enum eklenir. Gerekçe: alansız enum yapısı gereği hiçbir içerik taşıyamaz; `node_count`, `phash_distance` ve pano biçimi s-core'un ihtiyacı değil (en az metadata ilkesi); çıktı kontratı da sensörün iç tipine bağlanmamış olur.
@@ -114,9 +114,9 @@ Değişecek yerler (63be9f1 satırları):
 | src-tauri | DTO | Değişmez (`CausalityQueryHit` etkilenmez) |
 
 Geçiş sırası (Sprint 3, 1. gün):
-1. Orkestratör s-types/s-guard/s-core/redteam yazımını kısa süreliğine dondurur ve Sprint 2 işlerinin birleştirildiğini doğrular.
-2. s-architect `s-types` değişikliğini yapar (`cargo test -p s-types`). Workspace bu noktada bilerek kırık.
-3. Aynı dalda sırasıyla zero-trust-guard (s-guard), graph-vector-core (s-core), redteam-auditor (harness) kendi alanlarını düzeltir.
+1. s-types/s-guard/s-core/redteam değişiklikleri kısa süreliğine dondurulur; Sprint 2 işlerinin birleştirildiği doğrulanır.
+2. `s-types` değişikliği yapılır (`cargo test -p s-types`). Workspace bu noktada bilerek kırık.
+3. Aynı dalda sırasıyla s-guard, s-core ve redteam harness'i düzeltilir.
 4. Kapanış: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test -p s-redteam` (Gate 1 koşul 3) ve ayrı workspace'lerde (`src-tauri`, `benchmarks`) `cargo check`. Tek commit olarak birleştirilir.
 5. **Bu iş kalıcı DB'den (DPAPI/SQLCipher) önce yapılmalı.** Şu an tüm DB'ler bellek içi olduğu için veri göçü (`ALTER TABLE`) gerekmiyor; kalıcı DB açıldıktan sonra bu değişiklik bir migrasyon gerektirir.
 

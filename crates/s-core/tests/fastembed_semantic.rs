@@ -1299,7 +1299,7 @@ fn fastembed_model_ids_and_encrypted_migration_from_devhash_and_dual_to_single_f
 
 /// Peak-memory probe for the background re-embedding path: 128 long (~512 token) texts
 /// through the app's single-FP32 configuration (CPU arena off). Peak working set is read
-/// externally (see `komutlar.txt`); this test only checks correctness and prints timing.
+/// externally; this test only checks correctness and prints timing.
 #[test]
 #[ignore = "needs cached model; run explicitly for backfill memory measurement"]
 fn backfill_batch_of_long_texts_embeds_all() {

@@ -7,7 +7,7 @@ members = [
     "crates/s-core",
     "tests/redteam",
 ]
-# src-tauri, benchmarks ve tests/security kendi workspace'leridir.
+# src-tauri ve tests/security kendi workspace'leridir.
 
 [workspace.package]
 version = "0.1.1"

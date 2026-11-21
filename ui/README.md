@@ -1,2 +1,4 @@
 # ui
-Sahibi: `overlay-ui-dev`. Faz 4 ön yüzü (Svelte veya React; karar Faz 4'te). Bellek hedefi: <50MB.
+
+Vite + TypeScript ön yüzü (arama penceresi ve Hafıza Paneli). Derleme: `npm --prefix ui run build`.
+Harici ağ kaynağı (CDN, web fontu) kullanılmaz.

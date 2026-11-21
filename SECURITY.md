@@ -1,8 +1,8 @@
 # Güvenlik Politikası
 
-Kapsam: Synapse Mind v0.1.x. Ayrıntılı analiz: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Kapsam: Synapse Mind v0.1.x.
 
-> **Sürüm durumu:** v0.1.0 için sürüm etiketi kullanıcı onayıyla atılır. Aşağıdaki "doğrulandı" ifadeleri yalnızca belirtilen testler ve kapsam için geçerlidir. Resmi Gate 2 sonucu "Doğrulama durumu" bölümündeki yer tutucuya yazılır.
+> **Sürüm durumu:** Aşağıdaki "doğrulandı" ifadeleri yalnızca belirtilen testler ve kapsam için geçerlidir. Resmi Gate 2 sonucu "Doğrulama durumu" bölümündeki yer tutucuya yazılır.
 
 ## Desteklenen sürümler
 
@@ -109,7 +109,7 @@ Karar ölçütü **sıfır toleranstır**; "kabul edilen riskle PASS" yoktur. S�
 
 **Nihai ikili üzerinde resmi koşu sonucu:**
 
-**Resmi Gate 2: PASS** (20.11.2026, redteam-auditor; nihai `synapse-mind.exe`, izole `LOCALAPPDATA`, gerçek sensör yolu: sentetik pencere + UIA gövdesi + 3 pano).
+**Resmi Gate 2: PASS** (20.11.2026; nihai `synapse-mind.exe`, izole `LOCALAPPDATA`, gerçek sensör yolu: sentetik pencere + UIA gövdesi + 3 pano).
 
 | Sıfır tolerans sınıfı | Sonuç |
 |---|---|
@@ -162,7 +162,7 @@ Bu tablonun dışında kalan, ilgili raporlarda belgelenmiş ek maskeleyici sın
 
 ## Sınırlar
 
-Bunlar bilinen ve belgelenmiş sınırlardır. Ayrıntı ve gerekçe: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Bunlar bilinen ve belgelenmiş sınırlardır.
 
 - **Aynı kullanıcı oturumunda çalışan kötü amaçlı yazılım** DPAPI anahtarını açabilir (DPAPI kullanıcı kapsamlıdır), çalışan sürecin belleğini okuyabilir, açık veritabanını okuyabilir. Synapse Mind bu saldırgana karşı koruma sağlamaz.
 - **Pagefile, hibernasyon dosyası ve çekirdek tamponları** Gate 2 kapsamı dışındadır (MiniDump yalnızca kullanıcı kipi belleği görür). `zeroize` sayfa dosyasına yazılmış sayfaları geri alamaz. Tam disk şifrelemesi (BitLocker) önerilir.
@@ -182,4 +182,4 @@ cargo test -p s-types
 cd tests/security && cargo test
 ```
 
-Gate 1, Gate 2 ve genel derleme/test komutları: [komutlar.txt](komutlar.txt).
+Gate 1: `cargo test -p s-redteam -- --include-ignored`. Gate 2: `tests/security` (`gate2-app`, `--features gate2-hooks` ile derlenmiş ikili).

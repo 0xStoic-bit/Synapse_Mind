@@ -7,9 +7,9 @@ Her şey cihazında kalır. Parolalar, API anahtarları ve kişisel bilgiler dis
 
 `v0.1.1` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
 
-![Alt+Space ile arama: "derleme hatası" yazılıyor, nedensellik bağlarıyla sonuçlar geliyor](docs/media/arama.gif)
+![Alt+Space ile arama: "derleme hatası" yazılıyor, nedensellik bağlarıyla sonuçlar geliyor](assets/arama.gif)
 
-> Görüntüler sentetik veriyle alınmıştır. Synapse Mind'ın pencereleri gerçek ekran kayıtlarında görünmez (`WDA_EXCLUDEFROMCAPTURE`); bu yüzden arayüz kayıt için tarayıcıda örnek veriyle çalıştırıldı. Betik: [docs/media/capture.mjs](docs/media/capture.mjs).
+> Görüntüler sentetik veriyle alınmıştır. Synapse Mind'ın pencereleri gerçek ekran kayıtlarında görünmez (`WDA_EXCLUDEFROMCAPTURE`); bu yüzden arayüz kayıt için tarayıcıda örnek veriyle çalıştırıldı.
 
 ## Ne yapar
 
@@ -23,12 +23,12 @@ Her şey cihazında kalır. Parolalar, API anahtarları ve kişisel bilgiler dis
 
 Bugün ne kadar şey hatırlandı, ne yapmaya çalışıyordun, hangi sırlar diske hiç ulaşmadı; duraklat, engelle, sil.
 
-![Hafıza Paneli: bugünkü hafıza, nedensellik zinciri, saatlik grafik ve bölümler arası gezinme](docs/media/hafiza-paneli.gif)
+![Hafıza Paneli: bugünkü hafıza, nedensellik zinciri, saatlik grafik ve bölümler arası gezinme](assets/hafiza-paneli.gif)
 
 <table>
 <tr>
-<td><img src="docs/media/hafiza-paneli-koyu.png" alt="Hafıza Paneli koyu tema"></td>
-<td><img src="docs/media/hafiza-paneli-duraklatildi.png" alt="Yakalama duraklatılmış"></td>
+<td><img src="assets/hafiza-paneli-koyu.png" alt="Hafıza Paneli koyu tema"></td>
+<td><img src="assets/hafiza-paneli-duraklatildi.png" alt="Yakalama duraklatılmış"></td>
 </tr>
 <tr>
 <td align="center">Koyu tema</td>
@@ -62,7 +62,7 @@ Tepsi simgesinin ipucu durumu gösterir: `kaydediyor`, `duraklatıldı (N dk)`, 
 - **Kendini kaydetmez:** Synapse Mind'ın kendi pencereleri ve süreçleri sensörde en başta dışlanır; yazdığın aramalar hafızaya girmez.
 - **Ağ yok:** kullanıcı verisi cihazdan çıkmaz. Tek ağ kullanımı, anlamsal arama modelinin ilk açılışta bir kez indirilmesidir. İnternet yoksa ya da indirme yarıda kalırsa uygulama çökmez, kelime aramasıyla (BM25) çalışmaya devam eder.
 
-Sınırlar (aynı oturumdaki kötü amaçlı yazılım, pagefile ve hibernasyon, Windows masaüstü yığını) ve kabul edilen riskler: [SECURITY.md](SECURITY.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Sınırlar (aynı oturumdaki kötü amaçlı yazılım, pagefile ve hibernasyon, Windows masaüstü yığını) ve kabul edilen riskler: [SECURITY.md](SECURITY.md).
 
 ## Ölçümler
 
@@ -104,7 +104,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 - Veriler: `%LOCALAPPDATA%\SynapseMind\memory.db` (şifreli) ve `key.bin` (DPAPI ile korunan anahtar). `key.bin` silinirse veritabanı açılamaz.
 - Görev Yöneticisi'nde ikinci bir `synapse-mind.exe` görmen normal: bu, UI Automation yardımcı işçisidir.
 
-Geliştirme komutlarının tamamı: [komutlar.txt](komutlar.txt).
 
 ## Henüz yok
 
@@ -116,7 +115,7 @@ Geliştirme komutlarının tamamı: [komutlar.txt](komutlar.txt).
 
 ## Belgeler
 
-[Mimari](ARCHITECTURE.md) · [Vizyon](SYNAPSE_MIND.md) · [Güvenlik](SECURITY.md) · [Tehdit modeli](docs/THREAT_MODEL.md) · [Sürüm notları](docs/CHANGELOG.md) · [Ölçümler](benchmark.md) · [Arayüz tasarımı](ui/DESIGN.md)
+[Mimari](ARCHITECTURE.md) · [Güvenlik](SECURITY.md) · [Ölçümler](benchmark.md) · [Arayüz tasarımı](ui/DESIGN.md)
 
 Belgelerin çoğu Türkçedir.
 
@@ -143,7 +142,7 @@ Everything stays on your device. Passwords, API keys and personal data are maske
 
 `v0.1.1` · Windows 11 (x64) · Rust 2024 + Tauri 2 · [FSL-1.1-MIT](LICENSE)
 
-> The demo above uses synthetic data. Synapse Mind's windows are hidden from real screen recordings (`WDA_EXCLUDEFROMCAPTURE`), so the UI was recorded in a browser with sample data. Script: [docs/media/capture.mjs](docs/media/capture.mjs). The UI itself is in Turkish.
+> The demo above uses synthetic data. Synapse Mind's windows are hidden from real screen recordings (`WDA_EXCLUDEFROMCAPTURE`), so the UI was recorded in a browser with sample data. The UI itself is in Turkish.
 
 ## What it does
 
@@ -157,7 +156,7 @@ Everything stays on your device. Passwords, API keys and personal data are maske
 
 How much was remembered today, what you were trying to do, which secrets never reached the disk; pause, block, delete.
 
-![Memory Panel: today's memory, causality chain, hourly chart and navigation](docs/media/hafiza-paneli.gif)
+![Memory Panel: today's memory, causality chain, hourly chart and navigation](assets/hafiza-paneli.gif)
 
 ## Usage
 
@@ -185,7 +184,7 @@ The tray tooltip shows the live state: recording, paused (N min), suspended (gam
 - **Does not record itself:** Synapse Mind's own windows and processes are excluded at the very start of the sensor; your searches never enter the memory.
 - **No network:** user data never leaves the device. The only network use is a one-time download of the semantic search model on first launch. Without internet, or if the download is interrupted, the app does not crash and keeps working with keyword search (BM25).
 
-Limits (malware in the same session, pagefile and hibernation, the Windows desktop heap) and accepted risks: [SECURITY.md](SECURITY.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) (in Turkish).
+Limits (malware in the same session, pagefile and hibernation, the Windows desktop heap) and accepted risks: [SECURITY.md](SECURITY.md) (in Turkish).
 
 ## Measurements
 
@@ -227,7 +226,6 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 - Data: `%LOCALAPPDATA%\SynapseMind\memory.db` (encrypted) and `key.bin` (DPAPI-protected key). If `key.bin` is deleted, the database cannot be opened.
 - A second `synapse-mind.exe` in Task Manager is expected: it is the UI Automation helper.
 
-All development commands: [komutlar.txt](komutlar.txt).
 
 ## Not yet
 

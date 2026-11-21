@@ -1,3 +1,4 @@
 # tests/redteam
-Sahibi: `redteam-auditor`. Gate 1 sentetik PII enjeksiyon senaryoları ve Gate 2 RAM dump araçları.
+
+Gate 1: sentetik PII ve sır enjeksiyon senaryoları (`cargo test -p s-redteam -- --include-ignored`).
 Tüm test verileri sentetiktir; gerçek kimlik bilgisi kullanılmaz.

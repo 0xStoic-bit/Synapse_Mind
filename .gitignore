@@ -1,34 +1,75 @@
-# Derleme çıktıları (tüm alt workspace'ler dahil)
+# ------------------------------------------------------------------
+# Rust / Cargo
+# ------------------------------------------------------------------
 target/
-*.pdb
 **/*.rs.bk
-backups/*
-!backups/.gitkeep
-benchmarks/results/
-benchmarks/target/
-# Yerel veritabanları ve bellek dökümleri asla depoya girmez
-*.db
-*.sqlite
-*.sqlite3
-*.dmp
-*.minidump
-.env
+*.pdb
+
+# ------------------------------------------------------------------
+# Tauri / ön yüz
+# ------------------------------------------------------------------
 node_modules/
 ui/dist/
+src-tauri/gen/schemas/
+*.tsbuildinfo
+npm-debug.log*
 
-# graphify bilgi grafı: yerel geliştirme aracı, her commit'te yeniden kurulur (git hook), depoya girmez
-graphify-out/
+# ------------------------------------------------------------------
+# Yerel veri, anahtarlar ve bellek dökümleri (asla depoya girmez)
+# ------------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+key.bin
+*.dmp
+*.minidump
+fastembed_cache/
+.fastembed_cache/
 
-# Günlükler ve işletim sistemi artıkları
-*.log
-Thumbs.db
-desktop.ini
+# ------------------------------------------------------------------
+# Gizli bilgiler ve ortam dosyaları
+# ------------------------------------------------------------------
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
 
-# Yapay zekâ geliştirme araçlarının yerel dosyaları depoya girmez
+# ------------------------------------------------------------------
+# Yerel çalışma klasörleri ve iç belgeler
+# ------------------------------------------------------------------
+docs/
+roadmap/
+backups/
+benchmarks/
+scripts/
+SYNAPSE_MIND.md
+komutlar.txt
+yapılan.md
+
+# ------------------------------------------------------------------
+# Geliştirme araçları
+# ------------------------------------------------------------------
 .claude/
 .agents/
 CLAUDE.md
 AGENTS.md
 AGENT_CONTRACTS.md
 RULES_AND_SKILLS.md
-scripts/agy-api.sh
+graphify-out/
+
+# ------------------------------------------------------------------
+# Editör ve işletim sistemi
+# ------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -113,7 +113,7 @@ Hedef SLA: **`p95 < 20.0 ms`**. (`dual_fp32_embed_one_4kb_guarded` çağrıda `s
 
 > **Bellek Farkı Notu:** v0.1.0 Sprint 4b ikilisi (`17.07 MiB`, `DevHashEmbedder`) ana süreçte `36.98–43.48 MB` WS ile `< 50 MB` hedefini **PASS** ediyordu; v0.1.1 yayın ikilisi (`45.3 MB`, `--features fastembed`) başlatma sırasında FP32 + INT8 `DualEmbedder` modellerini işlem içine yüklediği için Rust Core Daemon Working Set'i `273.63–279.70 MB` (`Private 241.83–246.03 MB`) seviyesine çıkmakta ve `< 50 MB` hedefini **FAIL** etmektedir.
 >
-> **Güncelleme (kullanıcı kararı, 21.11.2026; orkestratör ölçümü):** uygulama tek FP32 oturum + ORT CPU arenası kapalı + boşta model boşaltma + çalışma kümesi iadesi kullanır. Deterministik ölçüm: `fastembed,gate2-hooks` yayın derlemesi, izole LOCALAPPDATA, `--gate2-pause-capture --gate2-idle-unload-secs=60`, 15 sn aralıklı ana süreç örnekleri (tek koşu, p50/p95 değil):
+> **Güncelleme (21.11.2026):** uygulama tek FP32 oturum + ORT CPU arenası kapalı + boşta model boşaltma + çalışma kümesi iadesi kullanır. Deterministik ölçüm: `fastembed,gate2-hooks` yayın derlemesi, izole LOCALAPPDATA, `--gate2-pause-capture --gate2-idle-unload-secs=60`, 15 sn aralıklı ana süreç örnekleri (tek koşu, p50/p95 değil):
 >
 > | Evre | Working Set (MB) | Private (MB) | Hedef |
 > |---|---:|---:|---|

@@ -1,3 +1,4 @@
 # src-tauri
-Sahibi: `overlay-ui-dev`. Faz 4'te Tauri 2.0 projesi burada oluşturulup workspace üyelerine eklenecek.
-UI veritabanına doğrudan erişmez; yalnızca Tauri IPC üzerinden `CausalityQueryHit` alır.
+
+Tauri 2 masaüstü uygulaması: Alt+Space arama penceresi, Hafıza Paneli, sistem tepsisi ve NSIS kurulum paketi.
+Arayüz veritabanına doğrudan erişmez; yalnızca Tauri IPC üzerinden DTO alır.
