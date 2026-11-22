@@ -160,6 +160,32 @@ Bu tablonun dışında kalan, ilgili raporlarda belgelenmiş ek maskeleyici sın
 - Anahtar satırı sonunda bitiyorsa sonraki satırın ilk 6+ harfli sözcüğü anahtarla birlikte maskelenebilir (fail-closed, kullanılabilirlik kaybı).
 - Sınırlı Kiril/Yunan homoglif tablosu (tam Unicode confusables yok).
 
+## Zeroize kapsamı (izlenen çalışma)
+
+`zeroize` yalnızca Synapse Mind'ın kendi sahip olduğu belleği silebilir. İşletim sisteminin, kitaplıkların ve diğer süreçlerin tuttuğu kopyalar onun erişimi dışındadır. Bu tablo, hangi bellek bölgesinin nasıl korunduğunu ve bunun bugün **ölçülerek doğrulanıp doğrulanmadığını** gösterir. Her sürümde Gate 2 sonuçlarıyla güncellenir. Takip: [#1](https://github.com/0xStoic-bit/Synapse_Mind/issues/1).
+
+| Bellek bölgesi | `zeroize` ulaşır mı | Koruma | Doğrulama durumu (v0.1.1) |
+|---|---|---|---|
+| Uygulamanın kendi ham tamponları (başlık, süreç adı, UIA gövdesi, pano metni, guard gölge metinleri) | Evet | `Drop`'ta `zeroize`, `Zeroizing` sarmalayıcıları | ✅ Gate 2: uygulamaya ait (APP_OWNED) ham sır 0 |
+| Guard'ın yığın kalıntıları ve regex önbellekleri | Dolaylı | Her paketten sonra 192 KiB yığın silme, önbellek ısıtma | ✅ Gate 2 |
+| `UIAutomationCore.dll` iç kopyaları | Hayır | Okuma tek kullanımlık işçi süreçte; süreç ölünce çekirdek sayfaları sıfırlar | ✅ Gate 2: işçi süreçlerde bulgu 0 · ⚠️ işçi canlıyken (okuma başına ~30-45 ms) metin o süreçte bulunur |
+| Pano: Windows'un ve kaynak uygulamanın kopyası | Hayır | Kendi okuma kopyamız silinir; pano içeriğinin kendisi kullanıcıya aittir, silinmez | ✅ Kendi kopyalarımız: Gate 2 0 · ➖ OS kopyası kapsam dışı |
+| WebView2 (arayüz) süreçleri | Hayır | Arayüze ham veri gönderilmez, yalnızca maskeli sonuç DTO'ları | ✅ Gate 2: WebView2 süreçlerinde ham sır 0 |
+| SQLCipher iç tamponları | SQLCipher'ın kendi silmesi | `PRAGMA cipher_memory_security = ON` | ✅ Gate 2: anahtar ve HMAC anahtarı 0 |
+| ONNX Runtime (gömme modeli) tamponları | Hayır | Modele yalnızca maskelenmiş metin gider | ✅ Gate 2 ham sır 0 · ➖ maskeli metin aranmaz |
+| DbKey'in OS rastgele sayı üreteci tamponundaki kalıntısı | Hayır | Kabul edilmiş risk (K1) | ⚠️ Gate 2 ayrık sınıf; koşudan koşuya 0-5 |
+| Windows masaüstü yığını (pencere başlıkları, kontrol metinleri) | Hayır | İşletim sistemi davranışı, tüm GUI süreçlerinde paylaşılır | ➖ Belgelenmiş sınır (ilgisiz `explorer.exe` negatif kontrolü) |
+| Pagefile, hazırda bekletme dosyası, çekirdek tamponları | Hayır | Tam disk şifrelemesi (BitLocker) önerilir | ❌ Ölçülmedi (MiniDump yalnızca kullanıcı kipi belleği görür) |
+
+✅ ölçülerek doğrulandı · ⚠️ doğrulandı, açık kalan bir pencere ya da kabul edilmiş risk var · ➖ tasarım gereği kapsam dışı · ❌ henüz ölçülmedi
+
+**Planlanan iş:**
+
+- Gate 2 bulgularını sahip modüle (`UIAutomationCore.dll`, WebView2, SQLCipher, ONNX Runtime, OS) göre otomatik sınıflandırmak ve bu tabloyu her sürümde Gate 2 çıktısından üretmek.
+- UIA işçisinin canlı penceresini (ham metnin işçide bulunduğu süre) her sürümde ölçüp raporlamak.
+- Bellek baskısı altında pagefile'a yazılan sayfalar için ölçüm yöntemi araştırmak.
+- K1 kalıntısını azaltmak için anahtar üretim yolunu incelemek.
+
 ## Sınırlar
 
 Bunlar bilinen ve belgelenmiş sınırlardır.
